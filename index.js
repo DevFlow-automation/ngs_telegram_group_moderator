@@ -4,12 +4,33 @@ import { sql } from '@vercel/postgres';
 const bot = new Bot(process.env.BOT_TOKEN);
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
+// Проверка прав администратора для команд управления
+async function isAdmin(ctx) {
+    if (!ctx.from) return false;
+    if (process.env.ADMIN_ID && String(ctx.from.id) === String(process.env.ADMIN_ID)) {
+        return true;
+    }
+    if (ctx.chat?.type === "group" || ctx.chat?.type === "supergroup") {
+        try {
+            const member = await ctx.getChatMember(ctx.from.id);
+            return member.status === "creator" || member.status === "administrator";
+        } catch (error) {
+            console.error("Ошибка проверки прав:", error);
+            return false;
+        }
+    }
+    return !process.env.ADMIN_ID;
+}
+
 bot.command("start", (ctx) => {
     ctx.reply("Привет! Бот-модератор с базой Neon работает 🚀");
 });
 
 // Единоразовая команда для создания таблицы в БД
 bot.command("init_db", async (ctx) => {
+    if (!(await isAdmin(ctx))) {
+        return ctx.reply("⛔ У вас нет прав для выполнения этой команды.");
+    }
     try {
         await sql`CREATE TABLE IF NOT EXISTS moderators (id BIGINT PRIMARY KEY);`;
         ctx.reply("✅ Таблица модераторов успешно создана в Neon!");
@@ -21,11 +42,14 @@ bot.command("init_db", async (ctx) => {
 
 // Команда назначения модератора
 bot.command("set_puller", async (ctx) => {
-    const match = ctx.match; 
+    if (!(await isAdmin(ctx))) {
+        return ctx.reply("⛔ У вас нет прав для выполнения этой команды.");
+    }
+    const match = ctx.match?.trim(); 
     if (!match) return ctx.reply("Формат: /set_puller <ID>");
     
-    const newModId = parseInt(match);
-    if (isNaN(newModId)) return ctx.reply("ID должен быть числом.");
+    const newModId = Number(match);
+    if (!Number.isInteger(newModId) || newModId <= 0) return ctx.reply("ID должен быть положительным числом.");
 
     try {
         // ON CONFLICT DO NOTHING защищает от ошибки, если ID уже есть в базе
