@@ -159,8 +159,9 @@ bot.command("init_db", async (ctx) => {
         return ctx.reply("⛔ У вас нет прав для выполнения этой команды.");
     }
     try {
-        await sql`CREATE TABLE IF NOT EXISTS moderators (id BIGINT PRIMARY KEY);`;
-        ctx.reply("✅ Таблица модераторов успешно создана в Neon!");
+        await sql`CREATE TABLE IF NOT EXISTS moderators (id BIGINT PRIMARY KEY, last_poll_at TIMESTAMPTZ);`;
+        await sql`ALTER TABLE moderators ADD COLUMN IF NOT EXISTS last_poll_at TIMESTAMPTZ;`;
+        ctx.reply("✅ Таблица модераторов успешно создана/обновлена в Neon!");
     } catch (error) {
         console.error(error);
         ctx.reply("❌ Ошибка создания таблицы.");
@@ -275,12 +276,39 @@ bot.on("message", async (ctx) => {
     // 2. Авто-опросы в Олимпиадах
     else if (threadId === OLYMPIAD_THREAD_ID) {
         const userId = ctx.from?.id;
+        if (!userId) return;
+
+        // Игнорируем вложения без текста/подписи (например, 9–10 отдельных картинок внутри альбома)
+        const hasText = Boolean(ctx.message.text || ctx.message.caption);
+        if (!hasText) return;
         
         try {
-            // Ищем пользователя в базе
-            const { rows } = await sql`SELECT id FROM moderators WHERE id = ${userId};`;
+            // Атомарная проверка модератора и защита от дублей при пересылке альбома + текста (не чаще 1 опроса в 10 секунд)
+            let rows;
+            try {
+                ({ rows } = await sql`
+                    UPDATE moderators
+                    SET last_poll_at = NOW()
+                    WHERE id = ${userId}
+                      AND (last_poll_at IS NULL OR last_poll_at < NOW() - INTERVAL '10 seconds')
+                    RETURNING id;
+                `);
+            } catch (dbErr) {
+                // Автоматическое добавление колонки, если таблица была создана ранее
+                if (dbErr?.code === "42703") {
+                    await sql`ALTER TABLE moderators ADD COLUMN IF NOT EXISTS last_poll_at TIMESTAMPTZ;`;
+                    ({ rows } = await sql`
+                        UPDATE moderators
+                        SET last_poll_at = NOW()
+                        WHERE id = ${userId}
+                          AND (last_poll_at IS NULL OR last_poll_at < NOW() - INTERVAL '10 seconds')
+                        RETURNING id;
+                    `);
+                } else {
+                    throw dbErr;
+                }
+            }
 
-            // Если вернулась хотя бы одна строка, отправляем опрос
             if (rows.length > 0) {
                 await ctx.replyWithPoll(
                     "Ознакомлен(а)?",
