@@ -92,7 +92,9 @@ bot.command("status", async (ctx) => {
             "",
             "🛠 Команды:",
             "• /status — общая сводка (можно ответом на чужое сообщение, чтобы узнать ID автора)",
+            "• /list_pullers — список всех модераторов в БД",
             "• /set_puller <ID> — добавить модератора в БД",
+            "• /remove_puller <ID> — удалить модератора из БД",
             "• /init_db — инициализировать таблицу в БД"
         );
     }
@@ -121,10 +123,12 @@ bot.command("set_puller", async (ctx) => {
     if (!(await isAdmin(ctx))) {
         return ctx.reply("⛔ У вас нет прав для выполнения этой команды.");
     }
-    const match = ctx.match?.trim(); 
-    if (!match) return ctx.reply("Формат: /set_puller <ID>");
+    const match = ctx.match?.trim();
+    const replyId = ctx.message?.reply_to_message?.from?.id;
+    const rawId = match || (replyId ? String(replyId) : "");
+    if (!rawId) return ctx.reply("Формат: /set_puller <ID> (или ответом на сообщение пользователя)");
     
-    const newModId = Number(match);
+    const newModId = Number(rawId);
     if (!Number.isInteger(newModId) || newModId <= 0) return ctx.reply("ID должен быть положительным числом.");
 
     try {
@@ -134,6 +138,58 @@ bot.command("set_puller", async (ctx) => {
     } catch (error) {
         console.error("Ошибка БД:", error);
         ctx.reply("❌ Ошибка записи в Neon.");
+    }
+});
+
+// Команда удаления модератора
+bot.command("remove_puller", async (ctx) => {
+    if (!(await isAdmin(ctx))) {
+        return ctx.reply("⛔ У вас нет прав для выполнения этой команды.");
+    }
+    const match = ctx.match?.trim();
+    const replyId = ctx.message?.reply_to_message?.from?.id;
+    const rawId = match || (replyId ? String(replyId) : "");
+    if (!rawId) return ctx.reply("Формат: /remove_puller <ID> (или ответом на сообщение пользователя)");
+
+    const modId = Number(rawId);
+    if (!Number.isInteger(modId) || modId <= 0) return ctx.reply("ID должен быть положительным числом.");
+
+    try {
+        const { rowCount } = await sql`DELETE FROM moderators WHERE id = ${modId};`;
+        if (rowCount > 0) {
+            ctx.reply(`🗑️ Пользователь ${modId} удален из списка модераторов.`);
+        } else {
+            ctx.reply(`ℹ️ Пользователь ${modId} не найден в списке модераторов.`);
+        }
+    } catch (error) {
+        console.error("Ошибка БД при удалении:", error);
+        ctx.reply("❌ Ошибка удаления из Neon.");
+    }
+});
+
+// Команда просмотра списка модераторов
+bot.command("list_pullers", async (ctx) => {
+    const admin = await isAdmin(ctx);
+    const userId = ctx.from?.id;
+
+    try {
+        const { rows } = await sql`SELECT id FROM moderators ORDER BY id;`;
+        const ids = rows.map(r => String(r.id));
+        const isUserMod = userId ? ids.includes(String(userId)) : false;
+
+        if (!admin && !isUserMod) {
+            return ctx.reply("⛔ У вас нет прав для выполнения этой команды.");
+        }
+
+        if (ids.length === 0) {
+            return ctx.reply("📋 Список модераторов пуст.");
+        }
+
+        const listText = ids.map((id, idx) => `${idx + 1}. ${id}`).join("\n");
+        ctx.reply(`📋 Список модераторов (${ids.length}):\n${listText}`);
+    } catch (error) {
+        console.error("Ошибка БД при получении списка:", error);
+        ctx.reply("❌ Ошибка чтения списка модераторов из Neon.");
     }
 });
 
