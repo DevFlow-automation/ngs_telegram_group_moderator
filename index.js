@@ -7,15 +7,26 @@ const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 const GALLERY_THREAD_ID = 18;
 const OLYMPIAD_THREAD_ID = 15;
 const SUPER_MODERATOR_ID = 8297487103;
+const GROUP_CLEANUP_MS = 7000;
 
 let dbInitialized = false;
 let cachedBotUsername = "";
 
+const MEDIA_TYPES = ["photo", "video", "document", "animation", "audio", "voice", "video_note"];
+const MEDIA_SENDERS = {
+    photo: (api, chatId, fileId, opts) => api.sendPhoto(chatId, fileId, opts),
+    video: (api, chatId, fileId, opts) => api.sendVideo(chatId, fileId, opts),
+    document: (api, chatId, fileId, opts) => api.sendDocument(chatId, fileId, opts),
+    animation: (api, chatId, fileId, opts) => api.sendAnimation(chatId, fileId, opts),
+    audio: (api, chatId, fileId, opts) => api.sendAudio(chatId, fileId, opts),
+    voice: (api, chatId, fileId, opts) => api.sendVoice(chatId, fileId, opts),
+    video_note: (api, chatId, fileId, opts) => api.sendVideoNote(chatId, fileId, opts)
+};
+
 async function getBotUsername(api) {
     if (cachedBotUsername) return cachedBotUsername;
     try {
-        const me = await api.getMe();
-        cachedBotUsername = me.username || "";
+        cachedBotUsername = (await api.getMe()).username || "";
     } catch {
         // ignore
     }
@@ -43,14 +54,30 @@ async function ensureTables() {
             reject_reason TEXT,
             supermod_chat_id BIGINT,
             supermod_msg_id BIGINT,
-            group_notice_msg_id BIGINT,
             created_at TIMESTAMPTZ DEFAULT NOW()
         );
     `;
     dbInitialized = true;
 }
 
-// Проверка прав администратора для команд управления
+// Отправка ответа: в ЛС остается, а в группе удаляет саму команду и стирает ответ через 7 секунд
+async function replyClean(ctx, text, delayMs = GROUP_CLEANUP_MS, extra = {}) {
+    const isGroup = ctx.chat?.type === "group" || ctx.chat?.type === "supergroup";
+    const threadId = ctx.message?.message_thread_id;
+    const opts = { ...(threadId ? { message_thread_id: threadId } : {}), ...extra };
+
+    if (isGroup && ctx.message) {
+        await ctx.deleteMessage().catch(() => {});
+    }
+
+    const sent = await ctx.reply(text, opts);
+    if (isGroup) {
+        await sleep(delayMs);
+        await ctx.api.deleteMessage(ctx.chat.id, sent.message_id).catch(() => {});
+    }
+    return sent;
+}
+
 async function isAdmin(ctx) {
     if (!ctx.from) return false;
     if (
@@ -63,158 +90,86 @@ async function isAdmin(ctx) {
         try {
             const member = await ctx.getChatMember(ctx.from.id);
             return member.status === "creator" || member.status === "administrator";
-        } catch (error) {
-            console.error("Ошибка проверки прав:", error);
+        } catch {
             return false;
         }
     }
     return !process.env.ADMIN_ID;
 }
 
-// Получение имени (fullName) и @username пользователя из Telegram по его ID
 async function getTelegramUserInfo(ctx, userId) {
     const numericId = Number(userId);
     let tgUser = null;
 
     if (ctx.chat?.type === "group" || ctx.chat?.type === "supergroup") {
         try {
-            const member = await ctx.getChatMember(numericId);
-            tgUser = member?.user;
+            tgUser = (await ctx.getChatMember(numericId))?.user;
         } catch {
-            // fallback ниже
+            // fallback
         }
     }
-
     if (!tgUser) {
         try {
-            const chat = await ctx.api.getChat(numericId);
-            if (chat) tgUser = chat;
+            tgUser = await ctx.api.getChat(numericId);
         } catch {
-            // бот ещё не пересекался с этим пользователем
+            // fallback
         }
     }
-
     if (!tgUser) {
-        return {
-            id: String(userId),
-            fullName: null,
-            username: null,
-            formatted: `${userId} (имя не найдено)`
-        };
+        return { id: String(userId), formatted: `${userId} (имя не найдено)` };
     }
 
     const fullName = [tgUser.first_name, tgUser.last_name].filter(Boolean).join(" ") || "Без имени";
     const username = tgUser.username ? `@${tgUser.username}` : "без @username";
-
-    return {
-        id: String(userId),
-        fullName,
-        username,
-        formatted: `${userId} — ${fullName} (${username})`
-    };
+    return { id: String(userId), formatted: `${userId} — ${fullName} (${username})` };
 }
 
-// Извлечение текста, сущностей и медиа из сообщения (включая пересланные)
 function extractMessageData(msg) {
     const textContent = msg.text ?? msg.caption ?? null;
     const entities = msg.entities ?? msg.caption_entities ?? null;
 
-    let mediaItem = null;
-    let contentType = "text";
-
-    if (msg.photo && msg.photo.length > 0) {
-        contentType = "photo";
-        mediaItem = {
-            type: "photo",
-            file_id: msg.photo[msg.photo.length - 1].file_id,
-            msg_id: msg.message_id
-        };
-    } else if (msg.video) {
-        contentType = "video";
-        mediaItem = {
-            type: "video",
-            file_id: msg.video.file_id,
-            msg_id: msg.message_id
-        };
-    } else if (msg.document) {
-        contentType = "document";
-        mediaItem = {
-            type: "document",
-            file_id: msg.document.file_id,
-            msg_id: msg.message_id
-        };
-    } else if (msg.animation) {
-        contentType = "animation";
-        mediaItem = {
-            type: "animation",
-            file_id: msg.animation.file_id,
-            msg_id: msg.message_id
-        };
-    } else if (msg.audio) {
-        contentType = "audio";
-        mediaItem = {
-            type: "audio",
-            file_id: msg.audio.file_id,
-            msg_id: msg.message_id
-        };
-    } else if (msg.voice) {
-        contentType = "voice";
-        mediaItem = {
-            type: "voice",
-            file_id: msg.voice.file_id,
-            msg_id: msg.message_id
-        };
-    } else if (msg.video_note) {
-        contentType = "video_note";
-        mediaItem = {
-            type: "video_note",
-            file_id: msg.video_note.file_id,
-            msg_id: msg.message_id
-        };
-    } else if (!textContent) {
-        return null;
+    for (const type of MEDIA_TYPES) {
+        if (!msg[type]) continue;
+        const fileId = type === "photo" ? msg.photo[msg.photo.length - 1]?.file_id : msg[type].file_id;
+        if (fileId) {
+            return {
+                contentType: type,
+                textContent,
+                entities,
+                mediaItems: [{ type, file_id: fileId }]
+            };
+        }
     }
 
-    return {
-        contentType,
-        textContent,
-        entities,
-        mediaItems: mediaItem ? [mediaItem] : []
-    };
+    return textContent ? { contentType: "text", textContent, entities, mediaItems: [] } : null;
 }
 
-// Отправка сохраненного поста (одиночного, альбома из 10 фото или медиа + длинного текста > 1024 символов)
 async function sendStoredPost(api, targetChatId, targetThreadId, post) {
     const threadOpts = targetThreadId ? { message_thread_id: Number(targetThreadId) } : {};
-    const rawMediaItems = Array.isArray(post.media_items) ? post.media_items : [];
-    // Убираем возможные дубли по file_id
-    const seenFileIds = new Set();
-    const mediaItems = rawMediaItems.filter(item => {
-        if (!item?.file_id || seenFileIds.has(item.file_id)) return false;
-        seenFileIds.add(item.file_id);
+    const seen = new Set();
+    const mediaItems = (Array.isArray(post.media_items) ? post.media_items : []).filter(item => {
+        if (!item?.file_id || seen.has(item.file_id)) return false;
+        seen.add(item.file_id);
         return true;
     });
 
     const text = post.text_content || undefined;
     const entities = Array.isArray(post.entities) && post.entities.length > 0 ? post.entities : undefined;
-    // В Telegram лимит подписи (caption) к медиа — 1024 символа. Если текст длиннее, отправляем его отдельным сообщением следом.
-    const canAttachCaption = Boolean(text && text.length <= 1024);
+    const canCaption = Boolean(text && text.length <= 1024);
 
     if (mediaItems.length > 1) {
-        const groupableTypes = new Set(["photo", "video", "document", "audio"]);
-        const groupItems = mediaItems.filter(item => groupableTypes.has(item.type)).slice(0, 10);
+        const groupable = new Set(["photo", "video", "document", "audio"]);
+        const groupItems = mediaItems.filter(i => groupable.has(i.type)).slice(0, 10);
         if (groupItems.length > 1) {
             const mediaGroup = groupItems.map((item, idx) => ({
                 type: item.type,
                 media: item.file_id,
-                ...(idx === 0 && canAttachCaption
-                    ? { caption: text, ...(entities ? { caption_entities: entities } : {}) }
-                    : {})
+                ...(idx === 0 && canCaption ? { caption: text, ...(entities ? { caption_entities: entities } : {}) } : {})
             }));
             const sentMessages = await api.sendMediaGroup(targetChatId, mediaGroup, threadOpts);
             const firstMsgId = sentMessages[0]?.message_id;
 
-            if (text && !canAttachCaption) {
+            if (text && !canCaption) {
                 const textMsg = await api.sendMessage(targetChatId, text, {
                     ...threadOpts,
                     ...(entities ? { entities } : {}),
@@ -228,47 +183,24 @@ async function sendStoredPost(api, targetChatId, targetThreadId, post) {
 
     if (mediaItems.length >= 1) {
         const item = mediaItems[0];
-        const captionOpts = {
-            ...threadOpts,
-            ...(canAttachCaption ? { caption: text } : {}),
-            ...(canAttachCaption && entities ? { caption_entities: entities } : {})
-        };
-
-        let sentMediaMsg = null;
-        switch (item.type) {
-            case "photo":
-                sentMediaMsg = await api.sendPhoto(targetChatId, item.file_id, captionOpts);
-                break;
-            case "video":
-                sentMediaMsg = await api.sendVideo(targetChatId, item.file_id, captionOpts);
-                break;
-            case "document":
-                sentMediaMsg = await api.sendDocument(targetChatId, item.file_id, captionOpts);
-                break;
-            case "animation":
-                sentMediaMsg = await api.sendAnimation(targetChatId, item.file_id, captionOpts);
-                break;
-            case "audio":
-                sentMediaMsg = await api.sendAudio(targetChatId, item.file_id, captionOpts);
-                break;
-            case "voice":
-                sentMediaMsg = await api.sendVoice(targetChatId, item.file_id, captionOpts);
-                break;
-            case "video_note":
-                sentMediaMsg = await api.sendVideoNote(targetChatId, item.file_id, threadOpts);
-                break;
-        }
-
-        if (sentMediaMsg) {
-            if (text && (!canAttachCaption || item.type === "video_note")) {
+        const sender = MEDIA_SENDERS[item.type];
+        if (sender) {
+            const isVideoNote = item.type === "video_note";
+            const opts = {
+                ...threadOpts,
+                ...(!isVideoNote && canCaption ? { caption: text } : {}),
+                ...(!isVideoNote && canCaption && entities ? { caption_entities: entities } : {})
+            };
+            const sentMedia = await sender(api, targetChatId, item.file_id, opts);
+            if (text && (!canCaption || isVideoNote)) {
                 const textMsg = await api.sendMessage(targetChatId, text, {
                     ...threadOpts,
                     ...(entities ? { entities } : {}),
-                    reply_parameters: { message_id: sentMediaMsg.message_id }
+                    reply_parameters: { message_id: sentMedia.message_id }
                 });
                 return textMsg.message_id;
             }
-            return sentMediaMsg.message_id;
+            return sentMedia.message_id;
         }
     }
 
@@ -279,24 +211,21 @@ async function sendStoredPost(api, targetChatId, targetThreadId, post) {
     return sent.message_id;
 }
 
-// Формирование клавиатуры проверки для супермодератора
 function buildModerationKeyboard(postId) {
     return new InlineKeyboard()
         .text("✅ Опубликовать", `mod_approve:${postId}`)
         .text("❌ Отменить", `mod_reject:${postId}`);
 }
 
-// Отправка поста на проверку супермодератору в ЛС
-async function notifySuperModerator(api, post) {
-    const authorTag = post.author_username ? ` (@${post.author_username})` : "";
-    const headerText =
-        `📝 Публикация #${post.id} на проверку (тема «Олимпиады»)\n` +
-        `👤 Отправитель: ${post.author_name}${authorTag} [ID: ${post.author_id}]\n\n` +
-        `Выберите действие ниже:`;
+function formatModHeader(post) {
+    const tag = post.author_username ? ` (@${post.author_username})` : "";
+    return `📝 Пост #${post.id} на проверку от: ${post.author_name}${tag}`;
+}
 
+async function notifySuperModerator(api, post) {
     try {
         const previewMsgId = await sendStoredPost(api, SUPER_MODERATOR_ID, undefined, post);
-        const controlMsg = await api.sendMessage(SUPER_MODERATOR_ID, headerText, {
+        const controlMsg = await api.sendMessage(SUPER_MODERATOR_ID, formatModHeader(post), {
             reply_parameters: previewMsgId ? { message_id: previewMsgId } : undefined,
             reply_markup: buildModerationKeyboard(post.id)
         });
@@ -306,8 +235,8 @@ async function notifySuperModerator(api, post) {
                 supermod_msg_id = ${controlMsg.message_id}
             WHERE id = ${post.id};
         `;
-    } catch (dmError) {
-        console.error("Не удалось отправить пост в ЛС супермодератору (нужно нажать /start в боте):", dmError?.message);
+    } catch (err) {
+        console.error("ЛС супермодератора пока не активировано (/start):", err?.message);
     }
 }
 
@@ -315,7 +244,6 @@ bot.command("start", async (ctx) => {
     const payload = ctx.match?.trim() || "";
     const callerId = Number(ctx.from?.id);
 
-    // Если супермодератор нажал /start (включая переход по кнопке) — отправляем все ожидающие посты из очереди
     if (callerId === SUPER_MODERATOR_ID && ctx.chat?.type === "private") {
         try {
             await ensureTables();
@@ -326,21 +254,20 @@ bot.command("start", async (ctx) => {
                 LIMIT 10;
             `;
             if (pendingPosts.length > 0) {
-                await ctx.reply(`👑 Вы авторизованы как супермодератор! Отправляю публикации, ожидающие вашей проверки (${pendingPosts.length} шт.):`);
+                await ctx.reply(`👑 Ожидают проверки (${pendingPosts.length} шт.):`);
                 for (const post of pendingPosts) {
                     await notifySuperModerator(ctx.api, post);
                 }
                 return;
             }
         } catch (err) {
-            console.error("Ошибка проверки очереди при /start супермодератора:", err);
+            console.error("Ошибка проверки очереди при /start:", err);
         }
     }
 
-    if (payload === "notify") {
+    if (payload === "notify" && ctx.chat?.type === "private") {
         try {
             await ensureTables();
-            // Если у этого модератора есть последняя отклоненная публикация — сразу показываем её причину
             const { rows } = await sql`
                 SELECT * FROM moderation_queue
                 WHERE author_id = ${callerId} AND status = 'rejected'
@@ -352,46 +279,18 @@ bot.command("start", async (ctx) => {
                 await sendStoredPost(ctx.api, callerId, undefined, post).catch(() => {});
                 return ctx.reply(
                     `🔔 Уведомления подключены!\n\n` +
-                    `❌ Ваша последняя публикация #${post.id} в теме «Олимпиады» была отклонена супермодератором.\n\n` +
-                    `💬 Причина отклонения:\n${post.reject_reason || "Не указана"}`
+                    `❌ Публикация #${post.id} отклонена.\n💬 Причина: ${post.reject_reason || "Не указана"}`
                 );
             }
         } catch (err) {
-            console.error("Ошибка при проверке уведомлений в /start:", err);
+            console.error("Ошибка при проверке уведомлений:", err);
         }
-        return ctx.reply("🔔 Уведомления от бота подключены! Теперь вы будете получать результаты проверки ваших публикаций здесь в личных сообщениях.");
+        return ctx.reply("🔔 Уведомления подключены! Результаты проверки будут приходить сюда.");
     }
 
-    if (payload.startsWith("review_")) {
-        const postId = Number(payload.replace("review_", ""));
-        if (callerId !== SUPER_MODERATOR_ID) {
-            return ctx.reply("⛔ Просмотр публикаций на проверке доступен только супермодератору.");
-        }
-        try {
-            await ensureTables();
-            const { rows } = await sql`SELECT * FROM moderation_queue WHERE id = ${postId};`;
-            if (rows.length === 0) {
-                return ctx.reply("ℹ️ Публикация не найдена.");
-            }
-            const post = rows[0];
-            await sendStoredPost(ctx.api, SUPER_MODERATOR_ID, undefined, post);
-            await ctx.reply(
-                `📝 Публикация #${post.id} от ${post.author_name} (статус: ${post.status})`,
-                {
-                    reply_markup: post.status === "pending" ? buildModerationKeyboard(post.id) : undefined
-                }
-            );
-            return;
-        } catch (err) {
-            console.error("Ошибка при открытии публикации в /start:", err);
-            return ctx.reply("❌ Ошибка загрузки публикации.");
-        }
-    }
-
-    ctx.reply("Привет! Бот-модератор с базой Neon работает 🚀");
+    await replyClean(ctx, "Привет! Бот-модератор работает 🚀");
 });
 
-// Команда статуса со всей информацией для модератора/администратора
 bot.command("status", async (ctx) => {
     const user = ctx.from;
     const threadId = ctx.message?.message_thread_id;
@@ -404,9 +303,8 @@ bot.command("status", async (ctx) => {
         await ensureTables();
         const { rows } = await sql`SELECT id FROM moderators ORDER BY id;`;
         moderatorIds = rows.map(r => String(r.id));
-    } catch (error) {
-        console.error("Ошибка БД при проверке статуса:", error);
-        dbStatus = "❌ Ошибка подключения или таблица не создана (/init_db)";
+    } catch {
+        dbStatus = "❌ Ошибка подключения (/init_db)";
     }
 
     const isSuperMod = user ? Number(user.id) === SUPER_MODERATOR_ID : false;
@@ -415,139 +313,81 @@ bot.command("status", async (ctx) => {
     const userHandle = user?.username ? ` (@${user.username})` : "";
 
     const lines = [
-        "📊 Статус бота и модератора",
+        "📊 Статус бота",
         "",
-        "👤 Ваш профиль:",
-        `• Имя: ${userName}${userHandle}`,
-        `• Ваш ID: ${user?.id ?? "Неизвестно"}`,
-        `• Администратор: ${admin ? "✅ Да" : "❌ Нет"}`,
-        `• Супермодератор: ${isSuperMod ? "👑 Да" : "❌ Нет"}`,
-        `• Модератор (тема «Олимпиады»): ${isUserMod ? "✅ Да" : "❌ Нет"}`,
+        `👤 ${userName}${userHandle} [ID: ${user?.id ?? "?"}]`,
+        `• Админ: ${admin ? "✅" : "❌"} | Супермод: ${isSuperMod ? "👑" : "❌"} | Модератор: ${isUserMod ? "✅" : "❌"}`
     ];
 
     if (replyUser) {
-        const replyName = [replyUser.first_name, replyUser.last_name].filter(Boolean).join(" ") || "Неизвестно";
-        const replyHandle = replyUser.username ? ` (@${replyUser.username})` : "";
-        const isReplySuperMod = Number(replyUser.id) === SUPER_MODERATOR_ID;
-        const isReplyMod = isReplySuperMod || moderatorIds.includes(String(replyUser.id));
-        lines.push(
-            "",
-            "↩️ Пользователь из ответа:",
-            `• Имя: ${replyName}${replyHandle}`,
-            `• ID: ${replyUser.id}`,
-            `• Супермодератор: ${isReplySuperMod ? "👑 Да" : "❌ Нет"}`,
-            `• В базе модераторов: ${isReplyMod ? "✅ Да" : "❌ Нет"}`
-        );
+        const rName = [replyUser.first_name, replyUser.last_name].filter(Boolean).join(" ") || "Неизвестно";
+        const isRMod = Number(replyUser.id) === SUPER_MODERATOR_ID || moderatorIds.includes(String(replyUser.id));
+        lines.push(`↩️ В ответе: ${rName} [ID: ${replyUser.id}] — Модератор: ${isRMod ? "✅" : "❌"}`);
     }
 
     lines.push(
         "",
-        "💬 Чат и темы:",
-        `• ID чата: ${ctx.chat?.id} (${ctx.chat?.type})`,
-        `• ID текущей темы: ${threadId ?? "нет (основной чат)"}`,
-        `• Тема «Галерея» (только медиа): ID ${GALLERY_THREAD_ID}`,
-        `• Тема «Олимпиады» (предмодерация + авто-опросы): ID ${OLYMPIAD_THREAD_ID}`,
-        `• ID супермодератора: ${SUPER_MODERATOR_ID}`,
-        "",
-        "🗄 База данных (Neon):",
-        `• Статус: ${dbStatus}`,
-        `• Всего модераторов в БД: ${moderatorIds.length}`
+        `💬 Чат: ${ctx.chat?.id} | Тема: ${threadId ?? "основная"}`,
+        `• Галерея: ${GALLERY_THREAD_ID} | Олимпиады: ${OLYMPIAD_THREAD_ID}`,
+        `🗄 БД: ${dbStatus} (модераторов: ${moderatorIds.length})`
     );
 
     if (admin || isUserMod) {
-        const modDetails = await Promise.all(
-            moderatorIds.map((id, idx) =>
-                getTelegramUserInfo(ctx, id).then(info => {
-                    const crown = Number(id) === SUPER_MODERATOR_ID ? " 👑 [Супермодератор]" : "";
-                    return `  ${idx + 1}. ${info.formatted}${crown}`;
-                })
-            )
-        );
         lines.push(
-            "• Список модераторов:",
-            ...(modDetails.length > 0 ? modDetails : ["  пусто"]),
             "",
-            "🛠 Команды:",
-            "• /status — общая сводка (можно ответом на чужое сообщение, чтобы узнать ID автора)",
-            "• /list_pullers — список всех модераторов в БД",
-            "• /set_puller <ID> — добавить модератора в БД",
-            "• /remove_puller <ID> — удалить модератора из БД",
-            "• /init_db — инициализировать таблицы в БД"
+            "🛠 Команды: /status, /list_pullers, /set_puller <ID>, /remove_puller <ID>, /init_db"
         );
     }
 
-    await ctx.reply(lines.join("\n"), {
-        ...(threadId ? { message_thread_id: threadId } : {})
-    });
+    await replyClean(ctx, lines.join("\n"));
 });
 
-// Единоразовая команда для создания таблиц в БД
 bot.command("init_db", async (ctx) => {
-    if (!(await isAdmin(ctx))) {
-        return ctx.reply("⛔ У вас нет прав для выполнения этой команды.");
-    }
+    if (!(await isAdmin(ctx))) return replyClean(ctx, "⛔ Нет прав.");
     try {
         dbInitialized = false;
         await ensureTables();
-        ctx.reply("✅ Таблицы модераторов и очереди предмодерации успешно созданы/обновлены в Neon!");
-    } catch (error) {
-        console.error(error);
-        ctx.reply("❌ Ошибка создания таблиц.");
+        await replyClean(ctx, "✅ Таблицы БД готовы!");
+    } catch {
+        await replyClean(ctx, "❌ Ошибка создания таблиц.");
     }
 });
 
-// Команда назначения модератора
 bot.command("set_puller", async (ctx) => {
-    if (!(await isAdmin(ctx))) {
-        return ctx.reply("⛔ У вас нет прав для выполнения этой команды.");
-    }
-    const match = ctx.match?.trim();
-    const replyId = ctx.message?.reply_to_message?.from?.id;
-    const rawId = match || (replyId ? String(replyId) : "");
-    if (!rawId) return ctx.reply("Формат: /set_puller <ID> (или ответом на сообщение пользователя)");
-    
+    if (!(await isAdmin(ctx))) return replyClean(ctx, "⛔ Нет прав.");
+    const rawId = ctx.match?.trim() || (ctx.message?.reply_to_message?.from?.id ? String(ctx.message.reply_to_message.from.id) : "");
     const newModId = Number(rawId);
-    if (!Number.isInteger(newModId) || newModId <= 0) return ctx.reply("ID должен быть положительным числом.");
+    if (!rawId || !Number.isInteger(newModId) || newModId <= 0) {
+        return replyClean(ctx, "Формат: /set_puller <ID> (или ответом на сообщение)");
+    }
 
     try {
         await ensureTables();
         await sql`INSERT INTO moderators (id) VALUES (${newModId}) ON CONFLICT (id) DO NOTHING;`;
         const info = await getTelegramUserInfo(ctx, newModId);
-        ctx.reply(`✅ Пользователь назначен модератором и сохранен в БД:\n${info.formatted}`);
-    } catch (error) {
-        console.error("Ошибка БД:", error);
-        ctx.reply("❌ Ошибка записи в Neon.");
+        await replyClean(ctx, `✅ Назначен модератором:\n${info.formatted}`);
+    } catch {
+        await replyClean(ctx, "❌ Ошибка записи в БД.");
     }
 });
 
-// Команда удаления модератора
 bot.command("remove_puller", async (ctx) => {
-    if (!(await isAdmin(ctx))) {
-        return ctx.reply("⛔ У вас нет прав для выполнения этой команды.");
-    }
-    const match = ctx.match?.trim();
-    const replyId = ctx.message?.reply_to_message?.from?.id;
-    const rawId = match || (replyId ? String(replyId) : "");
-    if (!rawId) return ctx.reply("Формат: /remove_puller <ID> (или ответом на сообщение пользователя)");
-
+    if (!(await isAdmin(ctx))) return replyClean(ctx, "⛔ Нет прав.");
+    const rawId = ctx.match?.trim() || (ctx.message?.reply_to_message?.from?.id ? String(ctx.message.reply_to_message.from.id) : "");
     const modId = Number(rawId);
-    if (!Number.isInteger(modId) || modId <= 0) return ctx.reply("ID должен быть положительным числом.");
+    if (!rawId || !Number.isInteger(modId) || modId <= 0) {
+        return replyClean(ctx, "Формат: /remove_puller <ID> (или ответом на сообщение)");
+    }
 
     try {
         await ensureTables();
         const { rowCount } = await sql`DELETE FROM moderators WHERE id = ${modId};`;
-        if (rowCount > 0) {
-            ctx.reply(`🗑️ Пользователь ${modId} удален из списка модераторов.`);
-        } else {
-            ctx.reply(`ℹ️ Пользователь ${modId} не найден в списке модераторов.`);
-        }
-    } catch (error) {
-        console.error("Ошибка БД при удалении:", error);
-        ctx.reply("❌ Ошибка удаления из Neon.");
+        await replyClean(ctx, rowCount > 0 ? `🗑️ Модератор ${modId} удален.` : `ℹ️ ID ${modId} не найден.`);
+    } catch {
+        await replyClean(ctx, "❌ Ошибка удаления из БД.");
     }
 });
 
-// Команда просмотра списка модераторов
 bot.command("list_pullers", async (ctx) => {
     const admin = await isAdmin(ctx);
     const userId = ctx.from?.id;
@@ -558,37 +398,29 @@ bot.command("list_pullers", async (ctx) => {
         const ids = rows.map(r => String(r.id));
         const isUserMod = userId ? (Number(userId) === SUPER_MODERATOR_ID || ids.includes(String(userId))) : false;
 
-        if (!admin && !isUserMod) {
-            return ctx.reply("⛔ У вас нет прав для выполнения этой команды.");
-        }
+        if (!admin && !isUserMod) return replyClean(ctx, "⛔ Нет прав.");
 
-        const superInfo = await getTelegramUserInfo(ctx, SUPER_MODERATOR_ID);
-        const modDetails = await Promise.all(
-            ids.map((id, idx) =>
-                getTelegramUserInfo(ctx, id).then(info => `${idx + 1}. ${info.formatted}`)
-            )
-        );
+        const [superInfo, ...modDetails] = await Promise.all([
+            getTelegramUserInfo(ctx, SUPER_MODERATOR_ID),
+            ...ids.map((id, idx) => getTelegramUserInfo(ctx, id).then(info => `${idx + 1}. ${info.formatted}`))
+        ]);
 
         const textLines = [
-            `👑 Супермодератор:\n${superInfo.formatted}`,
+            `👑 Супермодератор: ${superInfo.formatted}`,
             "",
-            `📋 Список модераторов в БД (${ids.length}):`,
+            `📋 Модераторы (${ids.length}):`,
             ...(modDetails.length > 0 ? modDetails : ["Список пуст."])
         ];
-        ctx.reply(textLines.join("\n"));
-    } catch (error) {
-        console.error("Ошибка БД при получении списка:", error);
-        ctx.reply("❌ Ошибка чтения списка модераторов из Neon.");
+        await replyClean(ctx, textLines.join("\n"));
+    } catch {
+        await replyClean(ctx, "❌ Ошибка чтения списка из БД.");
     }
 });
 
-// Кнопка «Опубликовать» (только для супермодератора)
+// Одобрение публикации
 bot.callbackQuery(/^mod_approve:(\d+)$/, async (ctx) => {
     if (Number(ctx.from.id) !== SUPER_MODERATOR_ID) {
-        return ctx.answerCallbackQuery({
-            text: "⛔ Только супермодератор может опубликовать этот пост.",
-            show_alert: true
-        });
+        return ctx.answerCallbackQuery({ text: "⛔ Доступно только супермодератору.", show_alert: true });
     }
 
     const postId = Number(ctx.match[1]);
@@ -600,21 +432,14 @@ bot.callbackQuery(/^mod_approve:(\d+)$/, async (ctx) => {
             WHERE id = ${postId} AND status IN ('pending', 'awaiting_reason')
             RETURNING *;
         `;
-
         if (rows.length === 0) {
-            return ctx.answerCallbackQuery({
-                text: "ℹ️ Эта публикация уже была обработана.",
-                show_alert: true
-            });
+            return ctx.answerCallbackQuery({ text: "ℹ️ Уже обработано.", show_alert: true });
         }
 
         const post = rows[0];
-        await ctx.answerCallbackQuery({ text: "✅ Публикация одобрена и отправляется в тему!" });
+        await ctx.answerCallbackQuery({ text: "✅ Опубликовано!" });
 
-        // 1. Публикуем пост в тему «Олимпиады» для всех участников
         const publishedMsgId = await sendStoredPost(ctx.api, Number(post.chat_id), Number(post.thread_id), post);
-
-        // 2. Прикрепляем авто-опрос к опубликованному посту
         if (publishedMsgId) {
             await ctx.api.sendPoll(
                 Number(post.chat_id),
@@ -628,75 +453,74 @@ bot.callbackQuery(/^mod_approve:(\d+)$/, async (ctx) => {
             );
         }
 
-        // 3. Обновляем сообщение управления у супермодератора в ЛС
-        await ctx.editMessageText(
-            `✅ Публикация #${post.id} от ${post.author_name} опубликована в теме «Олимпиады» с авто-опросом.`
-        ).catch(() => {});
-
-        // 4. Уведомляем автора в ЛС (если открыто)
+        await ctx.editMessageText(`✅ Пост #${post.id} (${post.author_name}) опубликован.`).catch(() => {});
         await ctx.api.sendMessage(
             Number(post.author_id),
-            `✅ Ваша публикация в теме «Олимпиады» одобрена супермодератором и опубликована!`
+            `✅ Ваша публикация в теме «Олимпиады» одобрена и опубликована!`
         ).catch(() => {});
     } catch (error) {
-        console.error("Ошибка при одобрении публикации:", error);
-        await ctx.answerCallbackQuery({
-            text: "❌ Произошла ошибка при публикации.",
-            show_alert: true
-        }).catch(() => {});
+        console.error("Ошибка при публикации:", error);
+        await ctx.answerCallbackQuery({ text: "❌ Ошибка при публикации.", show_alert: true }).catch(() => {});
     }
 });
 
-// Кнопка «Отменить» (только для супермодератора) — запрашивает причину отклонения
+// Переход к вводу причины отклонения
 bot.callbackQuery(/^mod_reject:(\d+)$/, async (ctx) => {
     if (Number(ctx.from.id) !== SUPER_MODERATOR_ID) {
-        return ctx.answerCallbackQuery({
-            text: "⛔ Только супермодератор может отклонить этот пост.",
-            show_alert: true
-        });
+        return ctx.answerCallbackQuery({ text: "⛔ Доступно только супермодератору.", show_alert: true });
     }
 
     const postId = Number(ctx.match[1]);
     try {
         await ensureTables();
-        // Сбрасываем предыдущие незавершенные ожидания ввода причины
-        await sql`
-            UPDATE moderation_queue
-            SET status = 'pending'
-            WHERE status = 'awaiting_reason' AND id <> ${postId};
-        `;
-
+        await sql`UPDATE moderation_queue SET status = 'pending' WHERE status = 'awaiting_reason' AND id <> ${postId};`;
         const { rows } = await sql`
             UPDATE moderation_queue
             SET status = 'awaiting_reason'
             WHERE id = ${postId} AND status IN ('pending', 'awaiting_reason')
             RETURNING *;
         `;
-
         if (rows.length === 0) {
-            return ctx.answerCallbackQuery({
-                text: "ℹ️ Эта публикация уже была обработана.",
-                show_alert: true
-            });
+            return ctx.answerCallbackQuery({ text: "ℹ️ Уже обработано.", show_alert: true });
         }
 
         const post = rows[0];
-        await ctx.answerCallbackQuery({ text: "✍️ Напишите причину отклонения следующим сообщением" });
-
-        const backKb = new InlineKeyboard()
-            .text("✅ Всё же опубликовать", `mod_approve:${post.id}`);
-
+        await ctx.answerCallbackQuery({ text: "✍️ Напишите причину отклонения" });
         await ctx.editMessageText(
-            `❌ Отклонение публикации #${post.id} (автор: ${post.author_name}).\n\n` +
-            `✍️ Пожалуйста, отправьте следующим сообщением причину отклонения — она будет отправлена в ЛС автору публикации.`,
-            { reply_markup: backKb }
+            `✍️ Напишите причину отклонения для ${post.author_name} (пост #${post.id}):`,
+            { reply_markup: new InlineKeyboard().text("↩️ Назад", `mod_back:${post.id}`) }
         ).catch(() => {});
-    } catch (error) {
-        console.error("Ошибка при переводе в режим ввода причины:", error);
-        await ctx.answerCallbackQuery({
-            text: "❌ Ошибка при обработке действия.",
-            show_alert: true
+    } catch {
+        await ctx.answerCallbackQuery({ text: "❌ Ошибка.", show_alert: true }).catch(() => {});
+    }
+});
+
+// Возврат из режима ввода причины обратно к кнопкам «Опубликовать / Отменить»
+bot.callbackQuery(/^mod_back:(\d+)$/, async (ctx) => {
+    if (Number(ctx.from.id) !== SUPER_MODERATOR_ID) {
+        return ctx.answerCallbackQuery({ text: "⛔ Доступно только супермодератору.", show_alert: true });
+    }
+
+    const postId = Number(ctx.match[1]);
+    try {
+        await ensureTables();
+        const { rows } = await sql`
+            UPDATE moderation_queue
+            SET status = 'pending'
+            WHERE id = ${postId} AND status = 'awaiting_reason'
+            RETURNING *;
+        `;
+        if (rows.length === 0) {
+            return ctx.answerCallbackQuery({ text: "ℹ️ Уже обработано.", show_alert: true });
+        }
+
+        const post = rows[0];
+        await ctx.answerCallbackQuery();
+        await ctx.editMessageText(formatModHeader(post), {
+            reply_markup: buildModerationKeyboard(post.id)
         }).catch(() => {});
+    } catch {
+        await ctx.answerCallbackQuery({ text: "❌ Ошибка.", show_alert: true }).catch(() => {});
     }
 });
 
@@ -704,51 +528,51 @@ bot.on("message", async (ctx) => {
     const userId = ctx.from?.id ? Number(ctx.from.id) : null;
     const threadId = ctx.message.message_thread_id;
 
-    // 0. Обработка ввода причины отклонения от супермодератора в ЛС
+    // 0. Ввод причины отклонения от супермодератора в ЛС
     if (userId === SUPER_MODERATOR_ID && ctx.chat.type === "private" && (ctx.message.text || ctx.message.caption)) {
         const rawText = (ctx.message.text || ctx.message.caption || "").trim();
         if (rawText && !rawText.startsWith("/")) {
             try {
                 await ensureTables();
-                const { rows: waitingRows } = await sql`
+                const { rows } = await sql`
                     SELECT * FROM moderation_queue
                     WHERE status = 'awaiting_reason'
                     ORDER BY id DESC
                     LIMIT 1;
                 `;
-
-                if (waitingRows.length > 0) {
-                    const post = waitingRows[0];
-
+                if (rows.length > 0) {
+                    const post = rows[0];
                     await sql`
                         UPDATE moderation_queue
-                        SET status = 'rejected',
-                            reject_reason = ${rawText}
+                        SET status = 'rejected', reject_reason = ${rawText}
                         WHERE id = ${post.id};
                     `;
 
-                    // Отправляем в ЛС автору его исходную публикацию и причину отклонения (в тему ничего не пишем!)
-                    let dmSentToAuthor = false;
+                    if (post.supermod_msg_id) {
+                        await ctx.api.editMessageText(
+                            SUPER_MODERATOR_ID,
+                            Number(post.supermod_msg_id),
+                            `❌ Пост #${post.id} (${post.author_name}) отклонён.`
+                        ).catch(() => {});
+                    }
+
+                    let dmSent = false;
                     try {
                         const copyMsgId = await sendStoredPost(ctx.api, Number(post.author_id), undefined, post);
                         await ctx.api.sendMessage(
                             Number(post.author_id),
-                            `❌ Ваша публикация в тему «Олимпиады» была отклонена супермодератором.\n\n` +
-                            `💬 Причина отклонения:\n${rawText}`,
-                            {
-                                ...(copyMsgId ? { reply_parameters: { message_id: copyMsgId } } : {})
-                            }
+                            `❌ Ваша публикация в тему «Олимпиады» отклонена.\n\n💬 Причина:\n${rawText}`,
+                            copyMsgId ? { reply_parameters: { message_id: copyMsgId } } : {}
                         );
-                        dmSentToAuthor = true;
+                        dmSent = true;
                     } catch {
-                        dmSentToAuthor = false;
+                        dmSent = false;
                     }
 
-                    // Подтверждаем супермодератору в ЛС
                     await ctx.reply(
-                        dmSentToAuthor
-                            ? `✅ Публикация #${post.id} отклонена. Причина и копия поста отправлены в ЛС автору (${post.author_name}).`
-                            : `✅ Публикация #${post.id} отклонена.\n⚠️ Автор (${post.author_name}) ещё не запускал бота в ЛС — он получит причину отказа автоматически, как только откроет бота.`
+                        dmSent
+                            ? `✅ Причина отправлена в ЛС автору (${post.author_name}).`
+                            : `✅ Отклонено. Автор (${post.author_name}) получит причину, как только откроет бота.`
                     );
                     return;
                 }
@@ -760,35 +584,18 @@ bot.on("message", async (ctx) => {
 
     // 1. Модерация Галереи
     if (threadId === GALLERY_THREAD_ID) {
-        const hasMedia = ctx.message.photo || 
-                         ctx.message.video || 
-                         ctx.message.document || 
-                         ctx.message.animation || 
-                         ctx.message.video_note;
-
+        const hasMedia = ctx.message.photo || ctx.message.video || ctx.message.document || ctx.message.animation || ctx.message.video_note;
         if (!hasMedia) {
-            try {
-                await ctx.deleteMessage();
-                const warning = await ctx.reply("⚠️ В этой теме разрешены только картинки и видео. Текст удален.", {
-                    message_thread_id: GALLERY_THREAD_ID
-                });
-                await sleep(5000);
-                await ctx.api.deleteMessage(ctx.chat.id, warning.message_id).catch(() => {});
-            } catch (error) {
-                console.error("Ошибка удаления:", error);
-            }
+            await replyClean(ctx, "⚠️ В этой теме разрешены только картинки и видео. Текст удален.", 5000);
         }
-    } 
-    
-    // 2. Предварительная модерация и авто-опросы в теме «Олимпиады»
-    else if (threadId === OLYMPIAD_THREAD_ID) {
-        if (!userId) return;
+        return;
+    }
 
-        // 2а. Если пишет сам супермодератор (8297487103) — публикуется сразу без удаления с авто-опросом
+    // 2. Тема «Олимпиады»: предмодерация и авто-опросы
+    if (threadId === OLYMPIAD_THREAD_ID && userId) {
+        // 2а. Супермодератор публикует сразу с авто-опросом
         if (userId === SUPER_MODERATOR_ID) {
-            const hasText = Boolean(ctx.message.text || ctx.message.caption);
-            if (!hasText) return;
-
+            if (!(ctx.message.text || ctx.message.caption)) return;
             try {
                 await ensureTables();
                 await sql`INSERT INTO moderators (id) VALUES (${SUPER_MODERATOR_ID}) ON CONFLICT (id) DO NOTHING;`;
@@ -799,36 +606,28 @@ bot.on("message", async (ctx) => {
                       AND (last_poll_at IS NULL OR last_poll_at < NOW() - INTERVAL '10 seconds')
                     RETURNING id;
                 `;
-
                 if (rows.length > 0) {
-                    await ctx.replyWithPoll(
-                        "Ознакомлен(а)?",
-                        ["Да", "Ознакомлюсь позже"],
-                        {
-                            is_anonymous: false,
-                            message_thread_id: OLYMPIAD_THREAD_ID,
-                            reply_parameters: { message_id: ctx.message.message_id }
-                        }
-                    );
+                    await ctx.replyWithPoll("Ознакомлен(а)?", ["Да", "Ознакомлюсь позже"], {
+                        is_anonymous: false,
+                        message_thread_id: OLYMPIAD_THREAD_ID,
+                        reply_parameters: { message_id: ctx.message.message_id }
+                    });
                 }
             } catch (error) {
-                console.error("Ошибка создания опроса для супермодератора:", error);
+                console.error("Ошибка создания опроса:", error);
             }
             return;
         }
 
-        // 2б. Проверяем, является ли отправитель модератором из БД
+        // 2б. Остальные модераторы из БД проходят предмодерацию
         try {
             await ensureTables();
             const { rows: modRows } = await sql`SELECT id FROM moderators WHERE id = ${userId};`;
-            if (modRows.length === 0) {
-                return;
-            }
+            if (modRows.length === 0) return;
 
             const msgData = extractMessageData(ctx.message);
             if (!msgData) return;
 
-            // Сразу удаляем сообщение модератора из темы
             await ctx.deleteMessage().catch(() => {});
 
             const authorName = [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(" ") || "коллега";
@@ -837,8 +636,7 @@ bot.on("message", async (ctx) => {
             const entitiesJson = msgData.entities ? JSON.stringify(msgData.entities) : null;
             const mediaItemsJson = JSON.stringify(msgData.mediaItems);
 
-            // Атомарная блокировка на 15 секунд для этого модератора:
-            // объединяет 10 картинок альбома + длинный текст в ОДИН пост и защищает от повторных вызовов вебхука Telegram!
+            // Атомарная 15-секундная группировка пакета (10 фото + длинный текст) от одного автора
             const { rows: lockRows } = await sql`
                 UPDATE moderators
                 SET last_poll_at = NOW()
@@ -846,11 +644,8 @@ bot.on("message", async (ctx) => {
                   AND (last_poll_at IS NULL OR last_poll_at < NOW() - INTERVAL '15 seconds')
                 RETURNING id;
             `;
-            const isFirstMessageOfBatch = lockRows.length > 0;
 
-            if (!isFirstMessageOfBatch) {
-                // Это 2..10-я картинка альбома или текст вдогонку (либо повторный вебхук от Telegram):
-                // просто добавляем медиа/текст к текущей собираемой публикации этого автора за последние 15 сек и сразу выходим!
+            if (lockRows.length === 0) {
                 await sql`
                     UPDATE moderation_queue
                     SET text_content = COALESCE(moderation_queue.text_content, ${msgData.textContent}),
@@ -868,7 +663,13 @@ bot.on("message", async (ctx) => {
                 return;
             }
 
-            // Первое сообщение пакета: создаем новую запись в очереди предмодерации
+            // Фоновая очистка обработанных записей старше 7 дней
+            await sql`
+                DELETE FROM moderation_queue
+                WHERE status IN ('approved', 'rejected')
+                  AND created_at < NOW() - INTERVAL '7 days';
+            `.catch(() => {});
+
             const { rows: insertedRows } = await sql`
                 INSERT INTO moderation_queue (
                     chat_id, thread_id, author_id, author_name, author_username,
@@ -902,30 +703,21 @@ bot.on("message", async (ctx) => {
                 ...(tempKb ? { reply_markup: tempKb } : {})
             });
 
-            // Ждём 1.5 сек, чтобы все 10 картинок альбома и прикрепленный текст успели склеиться в эту запись БД
             await sleep(1500);
-            const { rows: updatedRows } = await sql`
-                SELECT * FROM moderation_queue WHERE id = ${queueRow.id};
-            `;
-            if (updatedRows[0]) {
-                queueRow = updatedRows[0];
-            }
+            const { rows: updatedRows } = await sql`SELECT * FROM moderation_queue WHERE id = ${queueRow.id};`;
+            if (updatedRows[0]) queueRow = updatedRows[0];
 
-            // Отправляем склеенный пост с кнопками «Опубликовать» / «Отменить» супермодератору в ЛС
             await notifySuperModerator(ctx.api, queueRow);
 
-            // Ждём оставшееся время (до ~8.5 сек в сумме, чтобы уложиться в 10-секундный лимит вебхука Telegram/Vercel) и удаляем уведомление
-            const elapsed = Date.now() - startTime;
-            const remainingWait = Math.max(0, 8500 - elapsed);
+            const remainingWait = Math.max(0, 8500 - (Date.now() - startTime));
             await sleep(remainingWait);
             await ctx.api.deleteMessage(ctx.chat.id, tempMsg.message_id).catch(() => {});
         } catch (error) {
-            console.error("Ошибка при обработке предмодерации в теме Олимпиады:", error);
+            console.error("Ошибка предмодерации в теме Олимпиады:", error);
         }
     }
 });
 
-// onTimeout: 'return' гарантирует, что grammY никогда не вернет 500 при долгих запросах и Telegram не зациклит повторную отправку вебхука
 export default webhookCallback(bot, 'http', {
     timeoutMilliseconds: 25_000,
     onTimeout: 'return'
