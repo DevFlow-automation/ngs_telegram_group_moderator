@@ -25,6 +25,49 @@ async function isAdmin(ctx) {
     return !process.env.ADMIN_ID;
 }
 
+// Получение имени (fullName) и @username пользователя из Telegram по его ID
+async function getTelegramUserInfo(ctx, userId) {
+    const numericId = Number(userId);
+    let tgUser = null;
+
+    if (ctx.chat?.type === "group" || ctx.chat?.type === "supergroup") {
+        try {
+            const member = await ctx.getChatMember(numericId);
+            tgUser = member?.user;
+        } catch {
+            // fallback ниже
+        }
+    }
+
+    if (!tgUser) {
+        try {
+            const chat = await ctx.api.getChat(numericId);
+            if (chat) tgUser = chat;
+        } catch {
+            // бот ещё не пересекался с этим пользователем
+        }
+    }
+
+    if (!tgUser) {
+        return {
+            id: String(userId),
+            fullName: null,
+            username: null,
+            formatted: `${userId} (имя не найдено)`
+        };
+    }
+
+    const fullName = [tgUser.first_name, tgUser.last_name].filter(Boolean).join(" ") || "Без имени";
+    const username = tgUser.username ? `@${tgUser.username}` : "без @username";
+
+    return {
+        id: String(userId),
+        fullName,
+        username,
+        formatted: `${userId} — ${fullName} (${username})`
+    };
+}
+
 bot.command("start", (ctx) => {
     ctx.reply("Привет! Бот-модератор с базой Neon работает 🚀");
 });
@@ -87,8 +130,14 @@ bot.command("status", async (ctx) => {
     );
 
     if (admin || isUserMod) {
+        const modDetails = await Promise.all(
+            moderatorIds.map((id, idx) =>
+                getTelegramUserInfo(ctx, id).then(info => `  ${idx + 1}. ${info.formatted}`)
+            )
+        );
         lines.push(
-            `• Список ID модераторов: ${moderatorIds.length > 0 ? moderatorIds.join(", ") : "пусто"}`,
+            "• Список модераторов:",
+            ...(modDetails.length > 0 ? modDetails : ["  пусто"]),
             "",
             "🛠 Команды:",
             "• /status — общая сводка (можно ответом на чужое сообщение, чтобы узнать ID автора)",
@@ -134,7 +183,8 @@ bot.command("set_puller", async (ctx) => {
     try {
         // ON CONFLICT DO NOTHING защищает от ошибки, если ID уже есть в базе
         await sql`INSERT INTO moderators (id) VALUES (${newModId}) ON CONFLICT (id) DO NOTHING;`;
-        ctx.reply(`✅ Пользователь ${newModId} назначен модератором и сохранен в БД!`);
+        const info = await getTelegramUserInfo(ctx, newModId);
+        ctx.reply(`✅ Пользователь назначен модератором и сохранен в БД:\n${info.formatted}`);
     } catch (error) {
         console.error("Ошибка БД:", error);
         ctx.reply("❌ Ошибка записи в Neon.");
@@ -185,8 +235,12 @@ bot.command("list_pullers", async (ctx) => {
             return ctx.reply("📋 Список модераторов пуст.");
         }
 
-        const listText = ids.map((id, idx) => `${idx + 1}. ${id}`).join("\n");
-        ctx.reply(`📋 Список модераторов (${ids.length}):\n${listText}`);
+        const modDetails = await Promise.all(
+            ids.map((id, idx) =>
+                getTelegramUserInfo(ctx, id).then(info => `${idx + 1}. ${info.formatted}`)
+            )
+        );
+        ctx.reply(`📋 Список модераторов (${ids.length}):\n${modDetails.join("\n")}`);
     } catch (error) {
         console.error("Ошибка БД при получении списка:", error);
         ctx.reply("❌ Ошибка чтения списка модераторов из Neon.");
