@@ -47,11 +47,6 @@ async function ensureTables() {
             created_at TIMESTAMPTZ DEFAULT NOW()
         );
     `;
-    await sql`
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_moderation_queue_media_group
-        ON moderation_queue (media_group_id)
-        WHERE media_group_id IS NOT NULL;
-    `;
     dbInitialized = true;
 }
 
@@ -131,43 +126,50 @@ function extractMessageData(msg) {
         contentType = "photo";
         mediaItem = {
             type: "photo",
-            file_id: msg.photo[msg.photo.length - 1].file_id
+            file_id: msg.photo[msg.photo.length - 1].file_id,
+            msg_id: msg.message_id
         };
     } else if (msg.video) {
         contentType = "video";
         mediaItem = {
             type: "video",
-            file_id: msg.video.file_id
+            file_id: msg.video.file_id,
+            msg_id: msg.message_id
         };
     } else if (msg.document) {
         contentType = "document";
         mediaItem = {
             type: "document",
-            file_id: msg.document.file_id
+            file_id: msg.document.file_id,
+            msg_id: msg.message_id
         };
     } else if (msg.animation) {
         contentType = "animation";
         mediaItem = {
             type: "animation",
-            file_id: msg.animation.file_id
+            file_id: msg.animation.file_id,
+            msg_id: msg.message_id
         };
     } else if (msg.audio) {
         contentType = "audio";
         mediaItem = {
             type: "audio",
-            file_id: msg.audio.file_id
+            file_id: msg.audio.file_id,
+            msg_id: msg.message_id
         };
     } else if (msg.voice) {
         contentType = "voice";
         mediaItem = {
             type: "voice",
-            file_id: msg.voice.file_id
+            file_id: msg.voice.file_id,
+            msg_id: msg.message_id
         };
     } else if (msg.video_note) {
         contentType = "video_note";
         mediaItem = {
             type: "video_note",
-            file_id: msg.video_note.file_id
+            file_id: msg.video_note.file_id,
+            msg_id: msg.message_id
         };
     } else if (!textContent) {
         return null;
@@ -181,24 +183,46 @@ function extractMessageData(msg) {
     };
 }
 
-// Отправка сохраненного поста (одиночного или альбома) в указанный чат/тему
+// Отправка сохраненного поста (одиночного, альбома из 10 фото или медиа + длинного текста > 1024 символов)
 async function sendStoredPost(api, targetChatId, targetThreadId, post) {
     const threadOpts = targetThreadId ? { message_thread_id: Number(targetThreadId) } : {};
-    const mediaItems = Array.isArray(post.media_items) ? post.media_items : [];
+    const rawMediaItems = Array.isArray(post.media_items) ? post.media_items : [];
+    // Убираем возможные дубли по file_id
+    const seenFileIds = new Set();
+    const mediaItems = rawMediaItems.filter(item => {
+        if (!item?.file_id || seenFileIds.has(item.file_id)) return false;
+        seenFileIds.add(item.file_id);
+        return true;
+    });
+
     const text = post.text_content || undefined;
     const entities = Array.isArray(post.entities) && post.entities.length > 0 ? post.entities : undefined;
+    // В Telegram лимит подписи (caption) к медиа — 1024 символа. Если текст длиннее, отправляем его отдельным сообщением следом.
+    const canAttachCaption = Boolean(text && text.length <= 1024);
 
     if (mediaItems.length > 1) {
         const groupableTypes = new Set(["photo", "video", "document", "audio"]);
-        const groupItems = mediaItems.filter(item => groupableTypes.has(item.type));
+        const groupItems = mediaItems.filter(item => groupableTypes.has(item.type)).slice(0, 10);
         if (groupItems.length > 1) {
             const mediaGroup = groupItems.map((item, idx) => ({
                 type: item.type,
                 media: item.file_id,
-                ...(idx === 0 && text ? { caption: text, ...(entities ? { caption_entities: entities } : {}) } : {})
+                ...(idx === 0 && canAttachCaption
+                    ? { caption: text, ...(entities ? { caption_entities: entities } : {}) }
+                    : {})
             }));
             const sentMessages = await api.sendMediaGroup(targetChatId, mediaGroup, threadOpts);
-            return sentMessages[0]?.message_id;
+            const firstMsgId = sentMessages[0]?.message_id;
+
+            if (text && !canAttachCaption) {
+                const textMsg = await api.sendMessage(targetChatId, text, {
+                    ...threadOpts,
+                    ...(entities ? { entities } : {}),
+                    ...(firstMsgId ? { reply_parameters: { message_id: firstMsgId } } : {})
+                });
+                return textMsg.message_id;
+            }
+            return firstMsgId;
         }
     }
 
@@ -206,46 +230,45 @@ async function sendStoredPost(api, targetChatId, targetThreadId, post) {
         const item = mediaItems[0];
         const captionOpts = {
             ...threadOpts,
-            ...(text ? { caption: text } : {}),
-            ...(text && entities ? { caption_entities: entities } : {})
+            ...(canAttachCaption ? { caption: text } : {}),
+            ...(canAttachCaption && entities ? { caption_entities: entities } : {})
         };
 
+        let sentMediaMsg = null;
         switch (item.type) {
-            case "photo": {
-                const sent = await api.sendPhoto(targetChatId, item.file_id, captionOpts);
-                return sent.message_id;
+            case "photo":
+                sentMediaMsg = await api.sendPhoto(targetChatId, item.file_id, captionOpts);
+                break;
+            case "video":
+                sentMediaMsg = await api.sendVideo(targetChatId, item.file_id, captionOpts);
+                break;
+            case "document":
+                sentMediaMsg = await api.sendDocument(targetChatId, item.file_id, captionOpts);
+                break;
+            case "animation":
+                sentMediaMsg = await api.sendAnimation(targetChatId, item.file_id, captionOpts);
+                break;
+            case "audio":
+                sentMediaMsg = await api.sendAudio(targetChatId, item.file_id, captionOpts);
+                break;
+            case "voice":
+                sentMediaMsg = await api.sendVoice(targetChatId, item.file_id, captionOpts);
+                break;
+            case "video_note":
+                sentMediaMsg = await api.sendVideoNote(targetChatId, item.file_id, threadOpts);
+                break;
+        }
+
+        if (sentMediaMsg) {
+            if (text && (!canAttachCaption || item.type === "video_note")) {
+                const textMsg = await api.sendMessage(targetChatId, text, {
+                    ...threadOpts,
+                    ...(entities ? { entities } : {}),
+                    reply_parameters: { message_id: sentMediaMsg.message_id }
+                });
+                return textMsg.message_id;
             }
-            case "video": {
-                const sent = await api.sendVideo(targetChatId, item.file_id, captionOpts);
-                return sent.message_id;
-            }
-            case "document": {
-                const sent = await api.sendDocument(targetChatId, item.file_id, captionOpts);
-                return sent.message_id;
-            }
-            case "animation": {
-                const sent = await api.sendAnimation(targetChatId, item.file_id, captionOpts);
-                return sent.message_id;
-            }
-            case "audio": {
-                const sent = await api.sendAudio(targetChatId, item.file_id, captionOpts);
-                return sent.message_id;
-            }
-            case "voice": {
-                const sent = await api.sendVoice(targetChatId, item.file_id, captionOpts);
-                return sent.message_id;
-            }
-            case "video_note": {
-                const sent = await api.sendVideoNote(targetChatId, item.file_id, threadOpts);
-                if (text) {
-                    await api.sendMessage(targetChatId, text, {
-                        ...threadOpts,
-                        ...(entities ? { entities } : {}),
-                        reply_parameters: { message_id: sent.message_id }
-                    });
-                }
-                return sent.message_id;
-            }
+            return sentMediaMsg.message_id;
         }
     }
 
@@ -291,6 +314,28 @@ async function notifySuperModerator(api, post) {
 bot.command("start", async (ctx) => {
     const payload = ctx.match?.trim() || "";
     const callerId = Number(ctx.from?.id);
+
+    // Если супермодератор нажал /start (включая переход по кнопке) — отправляем все ожидающие посты из очереди
+    if (callerId === SUPER_MODERATOR_ID && ctx.chat?.type === "private") {
+        try {
+            await ensureTables();
+            const { rows: pendingPosts } = await sql`
+                SELECT * FROM moderation_queue
+                WHERE status = 'pending' AND supermod_msg_id IS NULL
+                ORDER BY id ASC
+                LIMIT 10;
+            `;
+            if (pendingPosts.length > 0) {
+                await ctx.reply(`👑 Вы авторизованы как супермодератор! Отправляю публикации, ожидающие вашей проверки (${pendingPosts.length} шт.):`);
+                for (const post of pendingPosts) {
+                    await notifySuperModerator(ctx.api, post);
+                }
+                return;
+            }
+        } catch (err) {
+            console.error("Ошибка проверки очереди при /start супермодератора:", err);
+        }
+    }
 
     if (payload === "notify") {
         try {
@@ -340,28 +385,6 @@ bot.command("start", async (ctx) => {
         } catch (err) {
             console.error("Ошибка при открытии публикации в /start:", err);
             return ctx.reply("❌ Ошибка загрузки публикации.");
-        }
-    }
-
-    // Если супермодератор нажал /start и есть необработанные посты в очереди — отправляем их
-    if (callerId === SUPER_MODERATOR_ID && ctx.chat?.type === "private") {
-        try {
-            await ensureTables();
-            const { rows: pendingPosts } = await sql`
-                SELECT * FROM moderation_queue
-                WHERE status = 'pending' AND supermod_msg_id IS NULL
-                ORDER BY id ASC
-                LIMIT 5;
-            `;
-            if (pendingPosts.length > 0) {
-                await ctx.reply(`Привет! Найдено публикаций, ожидающих проверки: ${pendingPosts.length}`);
-                for (const post of pendingPosts) {
-                    await notifySuperModerator(ctx.api, post);
-                }
-                return;
-            }
-        } catch (err) {
-            console.error("Ошибка проверки очереди при /start супермодератора:", err);
         }
     }
 
@@ -806,9 +829,7 @@ bot.on("message", async (ctx) => {
             if (!msgData) return;
 
             // Сразу удаляем сообщение модератора из темы
-            await ctx.deleteMessage().catch((err) => {
-                console.error("Не удалось удалить сообщение модератора:", err);
-            });
+            await ctx.deleteMessage().catch(() => {});
 
             const authorName = [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(" ") || "коллега";
             const authorUsername = ctx.from.username || null;
@@ -816,49 +837,51 @@ bot.on("message", async (ctx) => {
             const entitiesJson = msgData.entities ? JSON.stringify(msgData.entities) : null;
             const mediaItemsJson = JSON.stringify(msgData.mediaItems);
 
-            let queueRow;
-            let isFirstInGroup = true;
+            // Атомарная блокировка на 15 секунд для этого модератора:
+            // объединяет 10 картинок альбома + длинный текст в ОДИН пост и защищает от повторных вызовов вебхука Telegram!
+            const { rows: lockRows } = await sql`
+                UPDATE moderators
+                SET last_poll_at = NOW()
+                WHERE id = ${userId}
+                  AND (last_poll_at IS NULL OR last_poll_at < NOW() - INTERVAL '15 seconds')
+                RETURNING id;
+            `;
+            const isFirstMessageOfBatch = lockRows.length > 0;
 
-            if (mediaGroupId) {
-                const { rows } = await sql`
-                    INSERT INTO moderation_queue (
-                        chat_id, thread_id, author_id, author_name, author_username,
-                        media_group_id, content_type, text_content, entities, media_items
-                    )
-                    VALUES (
-                        ${ctx.chat.id}, ${OLYMPIAD_THREAD_ID}, ${userId}, ${authorName}, ${authorUsername},
-                        ${mediaGroupId}, ${msgData.contentType}, ${msgData.textContent},
-                        ${entitiesJson}::jsonb, ${mediaItemsJson}::jsonb
-                    )
-                    ON CONFLICT (media_group_id) WHERE media_group_id IS NOT NULL
-                    DO UPDATE SET
-                        text_content = COALESCE(moderation_queue.text_content, EXCLUDED.text_content),
-                        entities = COALESCE(moderation_queue.entities, EXCLUDED.entities),
-                        media_items = moderation_queue.media_items || EXCLUDED.media_items
-                    RETURNING *, (xmax = 0) AS is_first;
+            if (!isFirstMessageOfBatch) {
+                // Это 2..10-я картинка альбома или текст вдогонку (либо повторный вебхук от Telegram):
+                // просто добавляем медиа/текст к текущей собираемой публикации этого автора за последние 15 сек и сразу выходим!
+                await sql`
+                    UPDATE moderation_queue
+                    SET text_content = COALESCE(moderation_queue.text_content, ${msgData.textContent}),
+                        entities = COALESCE(moderation_queue.entities, ${entitiesJson}::jsonb),
+                        media_items = moderation_queue.media_items || ${mediaItemsJson}::jsonb
+                    WHERE id = (
+                        SELECT id FROM moderation_queue
+                        WHERE author_id = ${userId}
+                          AND status = 'pending'
+                          AND created_at > NOW() - INTERVAL '20 seconds'
+                        ORDER BY id DESC
+                        LIMIT 1
+                    );
                 `;
-                queueRow = rows[0];
-                isFirstInGroup = Boolean(queueRow?.is_first);
-            } else {
-                const { rows } = await sql`
-                    INSERT INTO moderation_queue (
-                        chat_id, thread_id, author_id, author_name, author_username,
-                        media_group_id, content_type, text_content, entities, media_items
-                    )
-                    VALUES (
-                        ${ctx.chat.id}, ${OLYMPIAD_THREAD_ID}, ${userId}, ${authorName}, ${authorUsername},
-                        NULL, ${msgData.contentType}, ${msgData.textContent},
-                        ${entitiesJson}::jsonb, ${mediaItemsJson}::jsonb
-                    )
-                    RETURNING *;
-                `;
-                queueRow = rows[0];
-            }
-
-            // Для альбома уведомление в тему и супермодератору отправляем только один раз
-            if (!isFirstInGroup) {
                 return;
             }
+
+            // Первое сообщение пакета: создаем новую запись в очереди предмодерации
+            const { rows: insertedRows } = await sql`
+                INSERT INTO moderation_queue (
+                    chat_id, thread_id, author_id, author_name, author_username,
+                    media_group_id, content_type, text_content, entities, media_items
+                )
+                VALUES (
+                    ${ctx.chat.id}, ${OLYMPIAD_THREAD_ID}, ${userId}, ${authorName}, ${authorUsername},
+                    ${mediaGroupId}, ${msgData.contentType}, ${msgData.textContent},
+                    ${entitiesJson}::jsonb, ${mediaItemsJson}::jsonb
+                )
+                RETURNING *;
+            `;
+            let queueRow = insertedRows[0];
 
             const tempText =
                 `Уважаемая ${authorName}\n` +
@@ -879,23 +902,21 @@ bot.on("message", async (ctx) => {
                 ...(tempKb ? { reply_markup: tempKb } : {})
             });
 
-            // Если это альбом, ждём 1.2 сек, чтобы все вложения альбома успели записаться в БД
-            if (mediaGroupId) {
-                await sleep(1200);
-                const { rows: updatedRows } = await sql`
-                    SELECT * FROM moderation_queue WHERE id = ${queueRow.id};
-                `;
-                if (updatedRows[0]) {
-                    queueRow = updatedRows[0];
-                }
+            // Ждём 1.5 сек, чтобы все 10 картинок альбома и прикрепленный текст успели склеиться в эту запись БД
+            await sleep(1500);
+            const { rows: updatedRows } = await sql`
+                SELECT * FROM moderation_queue WHERE id = ${queueRow.id};
+            `;
+            if (updatedRows[0]) {
+                queueRow = updatedRows[0];
             }
 
-            // Отправляем пост с кнопками «Опубликовать» / «Отменить» супермодератору в ЛС
+            // Отправляем склеенный пост с кнопками «Опубликовать» / «Отменить» супермодератору в ЛС
             await notifySuperModerator(ctx.api, queueRow);
 
-            // Выдерживаем ровно 10 секунд с момента появления временного уведомления и удаляем его
+            // Ждём оставшееся время (до ~8.5 сек в сумме, чтобы уложиться в 10-секундный лимит вебхука Telegram/Vercel) и удаляем уведомление
             const elapsed = Date.now() - startTime;
-            const remainingWait = Math.max(0, 10000 - elapsed);
+            const remainingWait = Math.max(0, 8500 - elapsed);
             await sleep(remainingWait);
             await ctx.api.deleteMessage(ctx.chat.id, tempMsg.message_id).catch(() => {});
         } catch (error) {
@@ -904,4 +925,8 @@ bot.on("message", async (ctx) => {
     }
 });
 
-export default webhookCallback(bot, 'http');
+// onTimeout: 'return' гарантирует, что grammY никогда не вернет 500 при долгих запросах и Telegram не зациклит повторную отправку вебхука
+export default webhookCallback(bot, 'http', {
+    timeoutMilliseconds: 25_000,
+    onTimeout: 'return'
+});
