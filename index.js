@@ -4,6 +4,9 @@ import { sql } from '@vercel/postgres';
 const bot = new Bot(process.env.BOT_TOKEN);
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
+const GALLERY_THREAD_ID = 18;
+const OLYMPIAD_THREAD_ID = 15;
+
 // Проверка прав администратора для команд управления
 async function isAdmin(ctx) {
     if (!ctx.from) return false;
@@ -24,6 +27,79 @@ async function isAdmin(ctx) {
 
 bot.command("start", (ctx) => {
     ctx.reply("Привет! Бот-модератор с базой Neon работает 🚀");
+});
+
+// Команда статуса со всей информацией для модератора/администратора
+bot.command("status", async (ctx) => {
+    const user = ctx.from;
+    const threadId = ctx.message?.message_thread_id;
+    const replyUser = ctx.message?.reply_to_message?.from;
+    const admin = await isAdmin(ctx);
+
+    let dbStatus = "✅ Подключена";
+    let moderatorIds = [];
+    try {
+        const { rows } = await sql`SELECT id FROM moderators ORDER BY id;`;
+        moderatorIds = rows.map(r => String(r.id));
+    } catch (error) {
+        console.error("Ошибка БД при проверке статуса:", error);
+        dbStatus = "❌ Ошибка подключения или таблица не создана (/init_db)";
+    }
+
+    const isUserMod = user ? moderatorIds.includes(String(user.id)) : false;
+    const userName = [user?.first_name, user?.last_name].filter(Boolean).join(" ") || "Неизвестно";
+    const userHandle = user?.username ? ` (@${user.username})` : "";
+
+    const lines = [
+        "📊 Статус бота и модератора",
+        "",
+        "👤 Ваш профиль:",
+        `• Имя: ${userName}${userHandle}`,
+        `• Ваш ID: ${user?.id ?? "Неизвестно"}`,
+        `• Администратор: ${admin ? "✅ Да" : "❌ Нет"}`,
+        `• Модератор (авто-опросы): ${isUserMod ? "✅ Да" : "❌ Нет"}`,
+    ];
+
+    if (replyUser) {
+        const replyName = [replyUser.first_name, replyUser.last_name].filter(Boolean).join(" ") || "Неизвестно";
+        const replyHandle = replyUser.username ? ` (@${replyUser.username})` : "";
+        const isReplyMod = moderatorIds.includes(String(replyUser.id));
+        lines.push(
+            "",
+            "↩️ Пользователь из ответа:",
+            `• Имя: ${replyName}${replyHandle}`,
+            `• ID: ${replyUser.id}`,
+            `• В базе модераторов: ${isReplyMod ? "✅ Да" : "❌ Нет"}`
+        );
+    }
+
+    lines.push(
+        "",
+        "💬 Чат и темы:",
+        `• ID чата: ${ctx.chat?.id} (${ctx.chat?.type})`,
+        `• ID текущей темы: ${threadId ?? "нет (основной чат)"}`,
+        `• Тема «Галерея» (только медиа): ID ${GALLERY_THREAD_ID}`,
+        `• Тема «Олимпиады» (авто-опросы): ID ${OLYMPIAD_THREAD_ID}`,
+        "",
+        "🗄 База данных (Neon):",
+        `• Статус: ${dbStatus}`,
+        `• Всего модераторов в БД: ${moderatorIds.length}`
+    );
+
+    if (admin || isUserMod) {
+        lines.push(
+            `• Список ID модераторов: ${moderatorIds.length > 0 ? moderatorIds.join(", ") : "пусто"}`,
+            "",
+            "🛠 Команды:",
+            "• /status — общая сводка (можно ответом на чужое сообщение, чтобы узнать ID автора)",
+            "• /set_puller <ID> — добавить модератора в БД",
+            "• /init_db — инициализировать таблицу в БД"
+        );
+    }
+
+    await ctx.reply(lines.join("\n"), {
+        ...(threadId ? { message_thread_id: threadId } : {})
+    });
 });
 
 // Единоразовая команда для создания таблицы в БД
@@ -62,8 +138,6 @@ bot.command("set_puller", async (ctx) => {
 });
 
 bot.on("message", async (ctx) => {
-    const GALLERY_THREAD_ID = 18;
-    const OLYMPIAD_THREAD_ID = 15;
     const threadId = ctx.message.message_thread_id;
 
     // 1. Модерация Галереи
