@@ -1,7 +1,11 @@
 import { Bot, InlineKeyboard, webhookCallback } from 'grammy';
 import { sql } from '@vercel/postgres';
+import { createOlympiadFromPost, ensureTables } from './src/db.js';
+import { handleApiRequest } from './src/api.js';
+import { renderMiniAppHtml } from './src/ui/miniapp.js';
+import { renderAdminHtml } from './src/ui/admin.js';
 
-const bot = new Bot(process.env.BOT_TOKEN);
+const bot = new Bot(process.env.BOT_TOKEN || '000000000:LOCAL_PREVIEW_TOKEN');
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 const GALLERY_THREAD_ID = 18;
@@ -9,8 +13,8 @@ const OLYMPIAD_THREAD_ID = 15;
 const SUPER_MODERATOR_ID = 8297487103;
 const GROUP_CLEANUP_MS = 7000;
 
-let dbInitialized = false;
 let cachedBotUsername = "";
+let cachedPublicOrigin = "";
 
 const MEDIA_TYPES = ["photo", "video", "document", "animation", "audio", "voice", "video_note"];
 const MEDIA_SENDERS = {
@@ -23,6 +27,16 @@ const MEDIA_SENDERS = {
     video_note: (api, chatId, fileId, opts) => api.sendVideoNote(chatId, fileId, opts)
 };
 
+function getWebBaseUrl() {
+    const raw =
+        process.env.WEB_APP_URL ||
+        process.env.MINI_APP_URL ||
+        (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : "") ||
+        cachedPublicOrigin ||
+        (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "");
+    return raw.replace(/\/+$/, "");
+}
+
 async function getBotUsername(api) {
     if (cachedBotUsername) return cachedBotUsername;
     try {
@@ -33,31 +47,22 @@ async function getBotUsername(api) {
     return cachedBotUsername;
 }
 
-async function ensureTables() {
-    if (dbInitialized) return;
-    await sql`CREATE TABLE IF NOT EXISTS moderators (id BIGINT PRIMARY KEY, last_poll_at TIMESTAMPTZ);`;
-    await sql`ALTER TABLE moderators ADD COLUMN IF NOT EXISTS last_poll_at TIMESTAMPTZ;`;
-    await sql`
-        CREATE TABLE IF NOT EXISTS moderation_queue (
-            id SERIAL PRIMARY KEY,
-            chat_id BIGINT NOT NULL,
-            thread_id INT NOT NULL,
-            author_id BIGINT NOT NULL,
-            author_name TEXT NOT NULL,
-            author_username TEXT,
-            media_group_id TEXT,
-            content_type TEXT NOT NULL,
-            text_content TEXT,
-            entities JSONB,
-            media_items JSONB NOT NULL DEFAULT '[]'::jsonb,
-            status TEXT NOT NULL DEFAULT 'pending',
-            reject_reason TEXT,
-            supermod_chat_id BIGINT,
-            supermod_msg_id BIGINT,
-            created_at TIMESTAMPTZ DEFAULT NOW()
-        );
-    `;
-    dbInitialized = true;
+async function buildRegisterKeyboard(api, olympiadId) {
+    const botUsername = await getBotUsername(api);
+    const shortName = (process.env.MINI_APP_SHORT_NAME || "").trim();
+    const webBase = getWebBaseUrl();
+
+    let url = "";
+    if (botUsername && shortName) {
+        url = `https://t.me/${botUsername}/${shortName}?startapp=ol_${olympiadId}`;
+    } else if (botUsername && process.env.MINI_APP_DIRECT === "true") {
+        url = `https://t.me/${botUsername}?startapp=ol_${olympiadId}`;
+    } else if (webBase) {
+        url = `${webBase}/?olympiad=${olympiadId}`;
+    }
+
+    if (!url) return undefined;
+    return new InlineKeyboard().url("🎓 Зарегистрировать ученика", url);
 }
 
 // Отправка ответа: в ЛС остается, а в группе удаляет саму команду и стирает ответ через 7 секунд
@@ -144,8 +149,9 @@ function extractMessageData(msg) {
     return textContent ? { contentType: "text", textContent, entities, mediaItems: [] } : null;
 }
 
-async function sendStoredPost(api, targetChatId, targetThreadId, post) {
+async function sendStoredPost(api, targetChatId, targetThreadId, post, replyMarkup = undefined) {
     const threadOpts = targetThreadId ? { message_thread_id: Number(targetThreadId) } : {};
+    const markupOpts = replyMarkup ? { reply_markup: replyMarkup } : {};
     const seen = new Set();
     const mediaItems = (Array.isArray(post.media_items) ? post.media_items : []).filter(item => {
         if (!item?.file_id || seen.has(item.file_id)) return false;
@@ -172,12 +178,13 @@ async function sendStoredPost(api, targetChatId, targetThreadId, post) {
             if (text && !canCaption) {
                 const textMsg = await api.sendMessage(targetChatId, text, {
                     ...threadOpts,
+                    ...markupOpts,
                     ...(entities ? { entities } : {}),
                     ...(firstMsgId ? { reply_parameters: { message_id: firstMsgId } } : {})
                 });
-                return textMsg.message_id;
+                return { messageId: textMsg.message_id, markupAttached: Boolean(replyMarkup) };
             }
-            return firstMsgId;
+            return { messageId: firstMsgId, markupAttached: false };
         }
     }
 
@@ -186,29 +193,33 @@ async function sendStoredPost(api, targetChatId, targetThreadId, post) {
         const sender = MEDIA_SENDERS[item.type];
         if (sender) {
             const isVideoNote = item.type === "video_note";
+            const attachToMedia = !(text && (!canCaption || isVideoNote));
             const opts = {
                 ...threadOpts,
+                ...(attachToMedia ? markupOpts : {}),
                 ...(!isVideoNote && canCaption ? { caption: text } : {}),
                 ...(!isVideoNote && canCaption && entities ? { caption_entities: entities } : {})
             };
             const sentMedia = await sender(api, targetChatId, item.file_id, opts);
-            if (text && (!canCaption || isVideoNote)) {
+            if (!attachToMedia) {
                 const textMsg = await api.sendMessage(targetChatId, text, {
                     ...threadOpts,
+                    ...markupOpts,
                     ...(entities ? { entities } : {}),
                     reply_parameters: { message_id: sentMedia.message_id }
                 });
-                return textMsg.message_id;
+                return { messageId: textMsg.message_id, markupAttached: Boolean(replyMarkup) };
             }
-            return sentMedia.message_id;
+            return { messageId: sentMedia.message_id, markupAttached: Boolean(replyMarkup) };
         }
     }
 
     const sent = await api.sendMessage(targetChatId, text || "(без текста)", {
         ...threadOpts,
+        ...markupOpts,
         ...(entities ? { entities } : {})
     });
-    return sent.message_id;
+    return { messageId: sent.message_id, markupAttached: Boolean(replyMarkup) };
 }
 
 function buildModerationKeyboard(postId) {
@@ -224,9 +235,9 @@ function formatModHeader(post) {
 
 async function notifySuperModerator(api, post) {
     try {
-        const previewMsgId = await sendStoredPost(api, SUPER_MODERATOR_ID, undefined, post);
+        const preview = await sendStoredPost(api, SUPER_MODERATOR_ID, undefined, post);
         const controlMsg = await api.sendMessage(SUPER_MODERATOR_ID, formatModHeader(post), {
-            reply_parameters: previewMsgId ? { message_id: previewMsgId } : undefined,
+            reply_parameters: preview.messageId ? { message_id: preview.messageId } : undefined,
             reply_markup: buildModerationKeyboard(post.id)
         });
         await sql`
@@ -288,7 +299,47 @@ bot.command("start", async (ctx) => {
         return ctx.reply("🔔 Уведомления подключены! Результаты проверки будут приходить сюда.");
     }
 
+    if (ctx.chat?.type === "private") {
+        const webBase = getWebBaseUrl();
+        const admin = await isAdmin(ctx);
+        if (webBase) {
+            const kb = new InlineKeyboard().webApp("🎓 Открыть регистрацию на олимпиады", webBase);
+            if (admin) {
+                kb.row().webApp("📊 Открыть Админ-панель (статистика и Excel)", `${webBase}/admin`);
+            }
+            return ctx.reply("Привет! Бот-модератор и портал «NGS Олимпиадник» работают 🚀", {
+                reply_markup: kb
+            });
+        }
+    }
+
     await replyClean(ctx, "Привет! Бот-модератор работает 🚀");
+});
+
+bot.command("app", async (ctx) => {
+    const webBase = getWebBaseUrl();
+    if (!webBase) {
+        return replyClean(ctx, "⚠️ Укажите переменную окружения WEB_APP_URL в Vercel.");
+    }
+
+    const isPrivate = ctx.chat?.type === "private";
+    const admin = await isAdmin(ctx);
+
+    if (isPrivate) {
+        const kb = new InlineKeyboard().webApp("🎓 Зарегистрировать ученика", webBase);
+        if (admin) {
+            kb.row().webApp("📊 Админ-панель и Excel", `${webBase}/admin`);
+        }
+        return ctx.reply("Откройте мини-приложение «NGS Олимпиадник»:", { reply_markup: kb });
+    }
+
+    const botUsername = await getBotUsername(ctx.api);
+    const shortName = (process.env.MINI_APP_SHORT_NAME || "").trim();
+    const url = botUsername && shortName
+        ? `https://t.me/${botUsername}/${shortName}`
+        : webBase;
+    const kb = new InlineKeyboard().url("🎓 Открыть портал олимпиад", url);
+    await replyClean(ctx, "Портал регистрации учеников на олимпиады:", 15000, { reply_markup: kb });
 });
 
 bot.command("status", async (ctx) => {
@@ -299,10 +350,18 @@ bot.command("status", async (ctx) => {
 
     let dbStatus = "✅ Подключена";
     let moderatorIds = [];
+    let olympiadsCount = 0;
+    let regsCount = 0;
     try {
         await ensureTables();
-        const { rows } = await sql`SELECT id FROM moderators ORDER BY id;`;
-        moderatorIds = rows.map(r => String(r.id));
+        const [modsRes, olRes, regRes] = await Promise.all([
+            sql`SELECT id FROM moderators ORDER BY id;`,
+            sql`SELECT COUNT(*)::int AS cnt FROM olympiads WHERE is_active = TRUE;`,
+            sql`SELECT COUNT(*)::int AS cnt FROM registrations;`
+        ]);
+        moderatorIds = modsRes.rows.map(r => String(r.id));
+        olympiadsCount = olRes.rows[0]?.cnt || 0;
+        regsCount = regRes.rows[0]?.cnt || 0;
     } catch {
         dbStatus = "❌ Ошибка подключения (/init_db)";
     }
@@ -329,13 +388,14 @@ bot.command("status", async (ctx) => {
         "",
         `💬 Чат: ${ctx.chat?.id} | Тема: ${threadId ?? "основная"}`,
         `• Галерея: ${GALLERY_THREAD_ID} | Олимпиады: ${OLYMPIAD_THREAD_ID}`,
-        `🗄 БД: ${dbStatus} (модераторов: ${moderatorIds.length})`
+        `🗄 БД: ${dbStatus} (модераторов: ${moderatorIds.length})`,
+        `🏆 Олимпиад: ${olympiadsCount} | Регистраций: ${regsCount}`
     );
 
     if (admin || isUserMod) {
         lines.push(
             "",
-            "🛠 Команды: /status, /list_pullers, /set_puller <ID>, /remove_puller <ID>, /init_db"
+            "🛠 Команды: /app, /status, /list_pullers, /set_puller <ID>, /remove_puller <ID>, /init_db"
         );
     }
 
@@ -345,9 +405,8 @@ bot.command("status", async (ctx) => {
 bot.command("init_db", async (ctx) => {
     if (!(await isAdmin(ctx))) return replyClean(ctx, "⛔ Нет прав.");
     try {
-        dbInitialized = false;
-        await ensureTables();
-        await replyClean(ctx, "✅ Таблицы БД готовы!");
+        await ensureTables(true);
+        await replyClean(ctx, "✅ Все таблицы БД (бот + олимпиады + ученики + регистрации) готовы!");
     } catch {
         await replyClean(ctx, "❌ Ошибка создания таблиц.");
     }
@@ -417,7 +476,7 @@ bot.command("list_pullers", async (ctx) => {
     }
 });
 
-// Одобрение публикации
+// Одобрение публикации супермодератором -> публикация + запись в таблицу olympiads + кнопка Mini App
 bot.callbackQuery(/^mod_approve:(\d+)$/, async (ctx) => {
     if (Number(ctx.from.id) !== SUPER_MODERATOR_ID) {
         return ctx.answerCallbackQuery({ text: "⛔ Доступно только супермодератору.", show_alert: true });
@@ -439,8 +498,28 @@ bot.callbackQuery(/^mod_approve:(\d+)$/, async (ctx) => {
         const post = rows[0];
         await ctx.answerCallbackQuery({ text: "✅ Опубликовано!" });
 
-        const publishedMsgId = await sendStoredPost(ctx.api, Number(post.chat_id), Number(post.thread_id), post);
-        if (publishedMsgId) {
+        const olympiad = await createOlympiadFromPost({
+            queueId: post.id,
+            chatId: Number(post.chat_id),
+            threadId: Number(post.thread_id),
+            textContent: post.text_content || "",
+            authorId: Number(post.author_id),
+            authorName: post.author_name,
+            authorUsername: post.author_username,
+            mediaCount: Array.isArray(post.media_items) ? post.media_items.length : 0
+        });
+
+        const regKeyboard = await buildRegisterKeyboard(ctx.api, olympiad.id);
+        const published = await sendStoredPost(
+            ctx.api,
+            Number(post.chat_id),
+            Number(post.thread_id),
+            post,
+            regKeyboard
+        );
+
+        if (published.messageId) {
+            await sql`UPDATE olympiads SET tg_message_id = ${published.messageId} WHERE id = ${olympiad.id};`.catch(() => {});
             await ctx.api.sendPoll(
                 Number(post.chat_id),
                 "Ознакомлен(а)?",
@@ -448,15 +527,16 @@ bot.callbackQuery(/^mod_approve:(\d+)$/, async (ctx) => {
                 {
                     is_anonymous: false,
                     message_thread_id: Number(post.thread_id),
-                    reply_parameters: { message_id: publishedMsgId }
+                    reply_parameters: { message_id: published.messageId },
+                    ...(!published.markupAttached && regKeyboard ? { reply_markup: regKeyboard } : {})
                 }
             );
         }
 
-        await ctx.editMessageText(`✅ Пост #${post.id} (${post.author_name}) опубликован.`).catch(() => {});
+        await ctx.editMessageText(`✅ Пост #${post.id} (${post.author_name}) опубликован и добавлен в портал олимпиад (#${olympiad.id}).`).catch(() => {});
         await ctx.api.sendMessage(
             Number(post.author_id),
-            `✅ Ваша публикация в теме «Олимпиады» одобрена и опубликована!`
+            `✅ Ваша публикация в теме «Олимпиады» одобрена, опубликована и добавлена на портал регистрации!`
         ).catch(() => {});
     } catch (error) {
         console.error("Ошибка при публикации:", error);
@@ -558,11 +638,11 @@ bot.on("message", async (ctx) => {
 
                     let dmSent = false;
                     try {
-                        const copyMsgId = await sendStoredPost(ctx.api, Number(post.author_id), undefined, post);
+                        const copy = await sendStoredPost(ctx.api, Number(post.author_id), undefined, post);
                         await ctx.api.sendMessage(
                             Number(post.author_id),
                             `❌ Ваша публикация в тему «Олимпиады» отклонена.\n\n💬 Причина:\n${rawText}`,
-                            copyMsgId ? { reply_parameters: { message_id: copyMsgId } } : {}
+                            copy.messageId ? { reply_parameters: { message_id: copy.messageId } } : {}
                         );
                         dmSent = true;
                     } catch {
@@ -591,11 +671,12 @@ bot.on("message", async (ctx) => {
         return;
     }
 
-    // 2. Тема «Олимпиады»: предмодерация и авто-опросы
+    // 2. Тема «Олимпиады»: предмодерация, авто-опросы и сохранение в портал олимпиад
     if (threadId === OLYMPIAD_THREAD_ID && userId) {
-        // 2а. Супермодератор публикует сразу с авто-опросом
+        // 2а. Супермодератор публикует сразу: сохраняем в БД + опрос с кнопкой регистрации
         if (userId === SUPER_MODERATOR_ID) {
-            if (!(ctx.message.text || ctx.message.caption)) return;
+            const postText = ctx.message.text || ctx.message.caption;
+            if (!postText) return;
             try {
                 await ensureTables();
                 await sql`INSERT INTO moderators (id) VALUES (${SUPER_MODERATOR_ID}) ON CONFLICT (id) DO NOTHING;`;
@@ -607,14 +688,27 @@ bot.on("message", async (ctx) => {
                     RETURNING id;
                 `;
                 if (rows.length > 0) {
+                    const authorName = [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(" ") || "Супермодератор";
+                    const olympiad = await createOlympiadFromPost({
+                        chatId: ctx.chat.id,
+                        threadId: OLYMPIAD_THREAD_ID,
+                        tgMessageId: ctx.message.message_id,
+                        textContent: postText,
+                        authorId: userId,
+                        authorName,
+                        authorUsername: ctx.from.username || null
+                    });
+                    const regKeyboard = await buildRegisterKeyboard(ctx.api, olympiad.id);
+
                     await ctx.replyWithPoll("Ознакомлен(а)?", ["Да", "Ознакомлюсь позже"], {
                         is_anonymous: false,
                         message_thread_id: OLYMPIAD_THREAD_ID,
-                        reply_parameters: { message_id: ctx.message.message_id }
+                        reply_parameters: { message_id: ctx.message.message_id },
+                        ...(regKeyboard ? { reply_markup: regKeyboard } : {})
                     });
                 }
             } catch (error) {
-                console.error("Ошибка создания опроса:", error);
+                console.error("Ошибка создания опроса/олимпиады:", error);
             }
             return;
         }
@@ -718,7 +812,49 @@ bot.on("message", async (ctx) => {
     }
 });
 
-export default webhookCallback(bot, 'http', {
+const telegramWebhook = webhookCallback(bot, 'http', {
     timeoutMilliseconds: 25_000,
     onTimeout: 'return'
 });
+
+export default async function handler(req, res) {
+    const proto = String(req.headers['x-forwarded-proto'] || 'https').split(',')[0].trim();
+    const host = String(req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0].trim();
+    if (host && !host.startsWith('localhost') && !host.startsWith('127.0.0.1')) {
+        cachedPublicOrigin = `${proto}://${host}`;
+    }
+
+    const urlObj = new URL(req.url || '/', `http://${host || 'localhost'}`);
+    const pathname = urlObj.pathname;
+    const method = (req.method || 'GET').toUpperCase();
+
+    // 1. Telegram Webhook (POST / или /webhook) — полная обратная совместимость
+    if (method === 'POST' && (pathname === '/' || pathname === '/webhook' || pathname === '/api/webhook')) {
+        return telegramWebhook(req, res);
+    }
+
+    // 2. REST API для Mini App и Админ-панели
+    if (pathname.startsWith('/api/')) {
+        return handleApiRequest(req, res, urlObj);
+    }
+
+    // 3. Админ-панель
+    if (pathname === '/admin' || pathname === '/admin/') {
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-store');
+        return res.end(renderAdminHtml());
+    }
+
+    // 4. Telegram Mini App / Портал регистрации учеников
+    if (pathname === '/' || pathname === '/app' || pathname === '/miniapp') {
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-store');
+        return res.end(renderMiniAppHtml());
+    }
+
+    res.statusCode = 404;
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.end('Not Found');
+}
