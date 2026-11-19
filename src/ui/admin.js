@@ -270,6 +270,8 @@ export function renderAdminHtml() {
     .modal-box {
       width: 100%;
       max-width: 540px;
+      max-height: 90vh;
+      overflow-y: auto;
       background: var(--surface);
       border: 1.5px solid var(--pine);
       border-radius: 20px;
@@ -554,6 +556,18 @@ export function renderAdminHtml() {
     </div>
   </div>
 
+  <!-- Confirm Modal (вместо нативного confirm(), который ломает окно в Telegram Desktop) -->
+  <div class="modal-backdrop" id="confirmModal">
+    <div class="modal-box" style="max-width:420px;">
+      <h3 style="margin:0 0 10px; font-family:var(--font-display); font-size:15px; color:var(--pine);">Подтверждение</h3>
+      <p id="confirmModalText" style="margin:0 0 18px; font-size:14px; line-height:1.45; color:var(--ink);"></p>
+      <div style="display:flex; justify-content:flex-end; gap:8px;">
+        <button type="button" class="btn btn-outline btn-sm" id="confirmCancelBtn">Отмена</button>
+        <button type="button" class="btn btn-danger btn-sm" id="confirmOkBtn">Подтвердить</button>
+      </div>
+    </div>
+  </div>
+
   <div class="toast-stack" id="toastStack"></div>
 
   <script>
@@ -592,6 +606,33 @@ export function renderAdminHtml() {
         el.style.transition = 'opacity 0.25s ease';
         setTimeout(() => el.remove(), 260);
       }, 3300);
+    }
+
+    function askConfirm(message, confirmLabel = 'Удалить') {
+      return new Promise((resolve) => {
+        const modal = $('confirmModal');
+        const okBtn = $('confirmOkBtn');
+        const cancelBtn = $('confirmCancelBtn');
+        $('confirmModalText').textContent = message;
+        okBtn.textContent = confirmLabel;
+        modal.classList.add('open');
+
+        const cleanup = (result) => {
+          modal.classList.remove('open');
+          okBtn.onclick = null;
+          cancelBtn.onclick = null;
+          modal.onclick = null;
+          document.removeEventListener('keydown', onKey);
+          resolve(result);
+        };
+        const onKey = (e) => {
+          if (e.key === 'Escape') cleanup(false);
+        };
+        okBtn.onclick = () => cleanup(true);
+        cancelBtn.onclick = () => cleanup(false);
+        modal.onclick = (e) => { if (e.target === modal) cleanup(false); };
+        document.addEventListener('keydown', onKey);
+      });
     }
 
     function formatDate(iso) {
@@ -909,7 +950,7 @@ export function renderAdminHtml() {
 
       $('journalTbody').querySelectorAll('[data-del-reg]').forEach((btn) => {
         btn.onclick = async () => {
-          if (!confirm('Удалить эту регистрацию?')) return;
+          if (!(await askConfirm('Удалить эту регистрацию?', 'Удалить'))) return;
           try {
             await adminFetch('/api/registrations?id=' + btn.dataset.delReg, { method: 'DELETE' });
             toast('Регистрация удалена');
@@ -974,7 +1015,7 @@ export function renderAdminHtml() {
 
       $('olympiadsManageTbody').querySelectorAll('[data-del-ol]').forEach((btn) => {
         btn.onclick = async () => {
-          if (!confirm('Удалить олимпиаду и все её регистрации?')) return;
+          if (!(await askConfirm('Удалить олимпиаду и все её регистрации?', 'Удалить'))) return;
           try {
             await adminFetch('/api/admin/olympiads/' + btn.dataset.delOl, { method: 'DELETE' });
             toast('Олимпиада удалена');
@@ -1222,7 +1263,7 @@ export function renderAdminHtml() {
     };
 
     $('clearDataBtn').onclick = async () => {
-      if (!confirm('Очистить все классы, учеников, учителей и регистрации? Олимпиады из темы 15 останутся.')) return;
+      if (!(await askConfirm('Очистить все классы, учеников, учителей и регистрации? Олимпиады из темы 15 останутся.', 'Очистить'))) return;
       try {
         await adminFetch('/api/admin/demo/clear', { method: 'POST', body: JSON.stringify({ clearOlympiads: false }) });
         toast('✓ База учеников и учителей очищена');
