@@ -27,6 +27,16 @@ function sendJson(res, status, data) {
     res.end(JSON.stringify(data));
 }
 
+function sendXlsx(res, buffer, filename, isHead = false) {
+    res.statusCode = 200;
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Length', String(buffer.length));
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.end(isHead ? undefined : buffer);
+}
+
 async function readJsonBody(req, maxBytes = 6 * 1024 * 1024) {
     if (req.body && typeof req.body === 'object') return req.body;
     const chunks = [];
@@ -237,17 +247,12 @@ export async function handleApiRequest(req, res, urlObj) {
         }
 
         // Скачать шаблон Excel (не требует запроса к БД)
-        if (pathname === '/api/admin/template' && method === 'GET') {
+        if (pathname === '/api/admin/template' && (method === 'GET' || method === 'HEAD')) {
             if (!actor.isAdmin) {
                 return sendJson(res, 401, { error: 'Требуется авторизация администратора' });
             }
             const buffer = await buildImportTemplateWorkbook();
-            res.statusCode = 200;
-            res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-            res.setHeader('Content-Disposition', 'attachment; filename="ngs-import-template.xlsx"');
-            res.setHeader('Cache-Control', 'no-store');
-            res.end(buffer);
-            return;
+            return sendXlsx(res, buffer, 'ngs-import-template.xlsx', method === 'HEAD');
         }
 
         await ensureTables();
@@ -462,12 +467,13 @@ export async function handleApiRequest(req, res, urlObj) {
                 });
                 return sendJson(res, 200, {
                     ...data,
+                    downloadToken: createAdminToken(actor.adminActor || { role: 'admin', name: 'Администратор' }),
                     usingDefaultPassword: isUsingDefaultAdminPassword()
                 });
             }
 
             // 7. Скачать Excel-отчёт (.xlsx)
-            if (pathname === '/api/admin/export' && method === 'GET') {
+            if (pathname === '/api/admin/export' && (method === 'GET' || method === 'HEAD')) {
                 const data = await fetchAdminReportData({
                     olympiadId: urlObj.searchParams.get('olympiadId'),
                     classId: urlObj.searchParams.get('classId'),
@@ -483,13 +489,7 @@ export async function handleApiRequest(req, res, urlObj) {
                 });
 
                 const dateStamp = new Date().toISOString().slice(0, 10);
-                const filename = `ngs-olympiads-report-${dateStamp}.xlsx`;
-                res.statusCode = 200;
-                res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-                res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-                res.setHeader('Cache-Control', 'no-store');
-                res.end(buffer);
-                return;
+                return sendXlsx(res, buffer, `ngs-olympiads-report-${dateStamp}.xlsx`, method === 'HEAD');
             }
 
             // 9. CRUD олимпиад

@@ -566,6 +566,7 @@ export function renderAdminHtml() {
 
     const state = {
       token: localStorage.getItem('ngs_admin_token') || '',
+      downloadToken: '',
       data: null,
       openOlympiads: new Set()
     };
@@ -635,52 +636,69 @@ export function renderAdminHtml() {
       $('logoutBtn').style.display = 'inline-flex';
     }
 
-    function downloadExcel(params = {}) {
+    async function triggerFileDownload(apiPath, params, filename, successMsg) {
       const qs = new URLSearchParams();
-      if (state.token) qs.set('token', state.token);
-      Object.entries(params).forEach(([k, v]) => {
+      const token = state.token || state.downloadToken;
+      if (token) qs.set('token', token);
+      Object.entries(params || {}).forEach(([k, v]) => {
         if (v) qs.set(k, v);
       });
-      const url = '/api/admin/export?' + qs.toString();
-      // Используем fetch -> blob, чтобы корректно передавались и Telegram initData, и Bearer token
-      fetch(url, { headers: authHeaders() })
-        .then(async (res) => {
-          if (!res.ok) throw new Error('Не удалось сформировать Excel-файл');
-          const blob = await res.blob();
-          const link = document.createElement('a');
-          const objUrl = URL.createObjectURL(blob);
-          link.href = objUrl;
-          link.download = 'ngs-olympiads-report-' + new Date().toISOString().slice(0, 10) + '.xlsx';
-          document.body.appendChild(link);
-          link.click();
-          link.remove();
-          setTimeout(() => URL.revokeObjectURL(objUrl), 2000);
-          toast('✓ Excel-отчёт (.xlsx) скачан');
-        })
-        .catch((err) => toast(err.message, true));
+      const query = qs.toString();
+      const relUrl = apiPath + (query ? '?' + query : '');
+      const fullUrl = window.location.origin + relUrl;
+
+      // В Telegram Mini App WebView блокирует blob-скачивания (<a download>)
+      if (tg && tg.initData) {
+        if (typeof tg.downloadFile === 'function' && (!tg.isVersionAtLeast || tg.isVersionAtLeast('8.0'))) {
+          try {
+            tg.downloadFile({ url: fullUrl, file_name: filename }, (accepted) => {
+              if (accepted) toast(successMsg);
+            });
+            return;
+          } catch {
+            // fallback к openLink ниже
+          }
+        }
+        if (typeof tg.openLink === 'function') {
+          tg.openLink(fullUrl);
+          toast('✓ Открыто скачивание файла в браузере');
+          return;
+        }
+      }
+
+      // Обычный браузер: fetch -> blob -> <a download>
+      try {
+        const res = await fetch(relUrl, { headers: authHeaders() });
+        if (!res.ok) throw new Error('Не удалось сформировать Excel-файл');
+        const blob = await res.blob();
+        const link = document.createElement('a');
+        const objUrl = URL.createObjectURL(blob);
+        link.href = objUrl;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(objUrl), 2000);
+        toast(successMsg);
+      } catch (err) {
+        toast(err.message, true);
+      }
+    }
+
+    function downloadExcel(params = {}) {
+      const filename = 'ngs-olympiads-report-' + new Date().toISOString().slice(0, 10) + '.xlsx';
+      triggerFileDownload('/api/admin/export', params, filename, '✓ Excel-отчёт (' + filename + ') скачан');
     }
 
     function downloadTemplate() {
-      fetch('/api/admin/template', { headers: authHeaders() })
-        .then(async (res) => {
-          if (!res.ok) throw new Error('Ошибка скачивания шаблона');
-          const blob = await res.blob();
-          const link = document.createElement('a');
-          const objUrl = URL.createObjectURL(blob);
-          link.href = objUrl;
-          link.download = 'ngs-import-template.xlsx';
-          document.body.appendChild(link);
-          link.click();
-          link.remove();
-          setTimeout(() => URL.revokeObjectURL(objUrl), 2000);
-        })
-        .catch((err) => toast(err.message, true));
+      triggerFileDownload('/api/admin/template', {}, 'ngs-import-template.xlsx', '✓ Шаблон (ngs-import-template.xlsx) скачан');
     }
 
     async function loadOverview() {
       try {
         const data = await adminFetch('/api/admin/overview');
         state.data = data;
+        if (data.downloadToken) state.downloadToken = data.downloadToken;
         showDashboard();
         $('defaultPassWarn').style.display = data.usingDefaultPassword ? 'flex' : 'none';
         renderKpis();
