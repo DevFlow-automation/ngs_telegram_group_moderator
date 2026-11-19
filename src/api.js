@@ -1,3 +1,4 @@
+import { Api, InputFile } from 'grammy';
 import { sql } from '@vercel/postgres';
 import {
     ensureTables,
@@ -35,6 +36,14 @@ function sendXlsx(res, buffer, filename, isHead = false) {
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.end(isHead ? undefined : buffer);
+}
+
+async function sendXlsxToTelegramChat(chatId, buffer, filename, caption) {
+    if (!process.env.BOT_TOKEN || !chatId) {
+        throw new Error('Не удалось определить Telegram-чат для отправки файла');
+    }
+    const api = new Api(process.env.BOT_TOKEN);
+    await api.sendDocument(chatId, new InputFile(buffer, filename), { caption });
 }
 
 async function readJsonBody(req, maxBytes = 6 * 1024 * 1024) {
@@ -252,7 +261,16 @@ export async function handleApiRequest(req, res, urlObj) {
                 return sendJson(res, 401, { error: 'Требуется авторизация администратора' });
             }
             const buffer = await buildImportTemplateWorkbook();
-            return sendXlsx(res, buffer, 'ngs-import-template.xlsx', method === 'HEAD');
+            const filename = 'ngs-import-template.xlsx';
+            if (method === 'GET' && urlObj.searchParams.get('delivery') === 'telegram') {
+                const chatId = actor.tgUser?.id || actor.adminActor?.id;
+                if (!chatId) {
+                    return sendJson(res, 400, { error: 'Откройте панель из Telegram или скачайте в браузере' });
+                }
+                await sendXlsxToTelegramChat(chatId, buffer, filename, '📄 Шаблон импорта учеников и учителей (.xlsx)');
+                return sendJson(res, 200, { ok: true, filename, delivery: 'telegram' });
+            }
+            return sendXlsx(res, buffer, filename, method === 'HEAD');
         }
 
         await ensureTables();
@@ -489,7 +507,16 @@ export async function handleApiRequest(req, res, urlObj) {
                 });
 
                 const dateStamp = new Date().toISOString().slice(0, 10);
-                return sendXlsx(res, buffer, `ngs-olympiads-report-${dateStamp}.xlsx`, method === 'HEAD');
+                const filename = `ngs-olympiads-report-${dateStamp}.xlsx`;
+                if (method === 'GET' && urlObj.searchParams.get('delivery') === 'telegram') {
+                    const chatId = actor.tgUser?.id || actor.adminActor?.id;
+                    if (!chatId) {
+                        return sendJson(res, 400, { error: 'Откройте панель из Telegram или скачайте в браузере' });
+                    }
+                    await sendXlsxToTelegramChat(chatId, buffer, filename, '📊 Отчёт по олимпиадам NGS (.xlsx)');
+                    return sendJson(res, 200, { ok: true, filename, delivery: 'telegram' });
+                }
+                return sendXlsx(res, buffer, filename, method === 'HEAD');
             }
 
             // 9. CRUD олимпиад

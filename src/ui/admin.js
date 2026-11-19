@@ -688,21 +688,25 @@ export function renderAdminHtml() {
       const relUrl = apiPath + (query ? '?' + query : '');
       const fullUrl = window.location.origin + relUrl;
 
-      // В Telegram Mini App WebView блокирует blob-скачивания (<a download>)
+      // В Telegram Mini App отправляем .xlsx прямо в чат с ботом (без нативного popup tg.downloadFile,
+      // который ломает геометрию окна на Telegram Desktop), с откатом на открытие в браузере.
       if (tg && tg.initData) {
-        if (typeof tg.downloadFile === 'function' && (!tg.isVersionAtLeast || tg.isVersionAtLeast('8.0'))) {
-          try {
-            tg.downloadFile({ url: fullUrl, file_name: filename }, (accepted) => {
-              if (accepted) toast(successMsg);
-            });
+        try {
+          toast('⏳ Отправляем файл в чат с ботом...');
+          const tgQs = new URLSearchParams(qs);
+          tgQs.set('delivery', 'telegram');
+          const res = await fetch(apiPath + '?' + tgQs.toString(), { headers: authHeaders() });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.error || 'Не удалось отправить файл в чат');
+          toast('✓ Файл ' + filename + ' отправлен вам в чат с ботом');
+          return;
+        } catch (err) {
+          if (typeof tg.openLink === 'function') {
+            tg.openLink(fullUrl);
+            toast('✓ Открыто скачивание файла в браузере');
             return;
-          } catch {
-            // fallback к openLink ниже
           }
-        }
-        if (typeof tg.openLink === 'function') {
-          tg.openLink(fullUrl);
-          toast('✓ Открыто скачивание файла в браузере');
+          toast(err.message, true);
           return;
         }
       }
