@@ -1,4 +1,4 @@
-import { SHARED_STYLES } from './shared-styles.js';
+import { SHARED_STYLES, TELEGRAM_WEBAPP_INIT } from './shared-styles.js';
 
 export function renderAdminHtml() {
     return `<!DOCTYPE html>
@@ -570,13 +570,7 @@ export function renderAdminHtml() {
 
   <div class="toast-stack" id="toastStack"></div>
 
-  <script>
-    const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
-    if (tg) {
-      tg.ready();
-      tg.expand();
-      try { tg.setHeaderColor('#12372A'); } catch {}
-    }
+  <script>${TELEGRAM_WEBAPP_INIT}
 
     const state = {
       token: localStorage.getItem('ngs_admin_token') || '',

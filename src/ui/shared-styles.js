@@ -30,6 +30,8 @@ export const SHARED_STYLES = `
   --font-display: 'Unbounded', system-ui, sans-serif;
   --font-body: 'Golos Text', -apple-system, BlinkMacSystemFont, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+  --tg-safe-top: 0px;
+  --tg-safe-bottom: 0px;
 }
 
 * { box-sizing: border-box; }
@@ -63,7 +65,7 @@ button, input, select, textarea {
   width: 100%;
   max-width: 1180px;
   margin: 0 auto;
-  padding: 18px 18px 80px;
+  padding: calc(18px + var(--tg-safe-top)) 18px calc(80px + var(--tg-safe-bottom));
 }
 
 .topbar {
@@ -320,10 +322,72 @@ button, input, select, textarea {
 }
 
 @media (max-width: 640px) {
-  .shell { padding: 12px 12px 76px; }
+  .shell { padding: calc(12px + var(--tg-safe-top)) 12px calc(76px + var(--tg-safe-bottom)); }
   .topbar { padding: 12px 14px; border-radius: 18px; }
   .brand-mark { width: 36px; height: 36px; font-size: 13px; border-radius: 11px; }
   .brand-title { font-size: 13.5px; }
   .brand-sub { font-size: 11px; }
 }
+`;
+
+export const TELEGRAM_WEBAPP_INIT = `
+    const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
+    if (tg) {
+      tg.ready();
+      tg.expand();
+      try {
+        tg.setHeaderColor('#12372A');
+        tg.setBackgroundColor('#F5F1E8');
+      } catch {}
+
+      const syncSafeAreas = () => {
+        const safeTop = Number((tg.safeAreaInset && tg.safeAreaInset.top) || 0) +
+          Number((tg.contentSafeAreaInset && tg.contentSafeAreaInset.top) || 0);
+        const safeBottom = Number((tg.safeAreaInset && tg.safeAreaInset.bottom) || 0) +
+          Number((tg.contentSafeAreaInset && tg.contentSafeAreaInset.bottom) || 0);
+        document.documentElement.style.setProperty('--tg-safe-top', safeTop + 'px');
+        document.documentElement.style.setProperty('--tg-safe-bottom', safeBottom + 'px');
+      };
+      syncSafeAreas();
+
+      const platform = String(tg.platform || '').toLowerCase();
+      const isMobilePlatform = platform === 'android' || platform === 'android_x' || platform === 'ios';
+      const isDesktopPlatform =
+        platform === 'tdesktop' ||
+        platform === 'macos' ||
+        platform === 'web' ||
+        platform === 'weba' ||
+        platform === 'webk' ||
+        platform === 'unigram' ||
+        (!isMobilePlatform && !/Android|iPhone|iPad|iPod/i.test(navigator.userAgent || ''));
+
+      const canFullscreen =
+        typeof tg.requestFullscreen === 'function' &&
+        (typeof tg.isVersionAtLeast !== 'function' || tg.isVersionAtLeast('8.0'));
+
+      let wasFullscreen = Boolean(tg.isFullscreen);
+      let userExitedFullscreen = false;
+
+      if (typeof tg.onEvent === 'function') {
+        tg.onEvent('safeAreaChanged', syncSafeAreas);
+        tg.onEvent('contentSafeAreaChanged', syncSafeAreas);
+        tg.onEvent('fullscreenChanged', () => {
+          if (wasFullscreen && !tg.isFullscreen) {
+            userExitedFullscreen = true;
+          }
+          wasFullscreen = Boolean(tg.isFullscreen);
+          syncSafeAreas();
+        });
+      }
+
+      const requestDesktopFullscreen = () => {
+        if (!isDesktopPlatform || !canFullscreen || tg.isFullscreen || userExitedFullscreen) return;
+        try {
+          tg.requestFullscreen();
+        } catch {}
+      };
+
+      requestDesktopFullscreen();
+      setTimeout(requestDesktopFullscreen, 150);
+    }
 `;
