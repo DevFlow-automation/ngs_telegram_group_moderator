@@ -111,9 +111,25 @@ export async function ensureTables(force = false) {
         );
     `;
 
+    await sql`
+        CREATE TABLE IF NOT EXISTS teacher_registrations (
+            id SERIAL PRIMARY KEY,
+            participant_teacher_id INT NOT NULL REFERENCES teachers(id) ON DELETE CASCADE,
+            olympiad_id INT NOT NULL REFERENCES olympiads(id) ON DELETE CASCADE,
+            registrar_teacher_id INT REFERENCES teachers(id) ON DELETE SET NULL,
+            registered_by_name TEXT NOT NULL,
+            registered_by_tg_id BIGINT,
+            registered_by_tg_username TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE (participant_teacher_id, olympiad_id)
+        );
+    `;
+
     await sql`CREATE INDEX IF NOT EXISTS idx_students_class_id ON students(class_id);`;
     await sql`CREATE INDEX IF NOT EXISTS idx_reg_student_id ON registrations(student_id);`;
     await sql`CREATE INDEX IF NOT EXISTS idx_reg_olympiad_id ON registrations(olympiad_id);`;
+    await sql`CREATE INDEX IF NOT EXISTS idx_treg_teacher_id ON teacher_registrations(participant_teacher_id);`;
+    await sql`CREATE INDEX IF NOT EXISTS idx_treg_olympiad_id ON teacher_registrations(olympiad_id);`;
     await sql`CREATE INDEX IF NOT EXISTS idx_olympiads_published ON olympiads(published_at DESC);`;
 
     dbInitialized = true;

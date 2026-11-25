@@ -61,9 +61,11 @@ export async function buildRegistrationsWorkbook({ olympiads, registrations, cla
         { header: '№', key: 'idx', width: 6 },
         { header: 'Олимпиада / Конкурс', key: 'title', width: 46 },
         { header: 'Статус', key: 'status', width: 14 },
-        { header: 'Зарегистрировано учеников', key: 'reg_count', width: 24 },
+        { header: 'Всего участников', key: 'reg_count', width: 18 },
+        { header: 'Учеников', key: 'student_count', width: 14 },
+        { header: 'Учителей', key: 'teacher_count', width: 14 },
         { header: 'Классы (разбивка)', key: 'classes_breakdown', width: 32 },
-        { header: 'Список учеников', key: 'students_list', width: 52 },
+        { header: 'Список участников', key: 'participants_list', width: 56 },
         { header: 'Дата публикации', key: 'published_at', width: 18 },
         { header: 'Автор поста', key: 'author_name', width: 22 }
     ];
@@ -75,17 +77,36 @@ export async function buildRegistrationsWorkbook({ olympiads, registrations, cla
         regsByOlympiad.get(reg.olympiad_id).push(reg);
     }
 
+    let totalStudentsRegs = 0;
+    let totalTeachersRegs = 0;
+
     olympiads.forEach((ol, i) => {
         const list = regsByOlympiad.get(ol.id) || [];
         const classCounts = new Map();
+        let studentCount = 0;
+        let teacherCount = 0;
         for (const r of list) {
-            classCounts.set(r.class_name, (classCounts.get(r.class_name) || 0) + 1);
+            if (r.participant_type === 'teacher') {
+                teacherCount++;
+            } else {
+                studentCount++;
+                classCounts.set(r.class_name, (classCounts.get(r.class_name) || 0) + 1);
+            }
         }
+        totalStudentsRegs += studentCount;
+        totalTeachersRegs += teacherCount;
+
         const breakdown = [...classCounts.entries()]
             .map(([cls, cnt]) => `${cls}: ${cnt}`)
             .join(', ');
-        const studentsList = list
-            .map((r) => `${r.student_name} (${r.class_name})`)
+        const participantsList = list
+            .map((r) => {
+                const name = r.participant_name || r.student_name;
+                if (r.participant_type === 'teacher') {
+                    return r.subject ? `${name} (Учитель, ${r.subject})` : `${name} (Учитель)`;
+                }
+                return `${name} (${r.class_name})`;
+            })
             .join('; ');
 
         wsOlympiads.addRow({
@@ -93,8 +114,10 @@ export async function buildRegistrationsWorkbook({ olympiads, registrations, cla
             title: ol.title,
             status: ol.is_active ? 'Активна' : 'Архив',
             reg_count: list.length,
+            student_count: studentCount,
+            teacher_count: teacherCount,
             classes_breakdown: breakdown || '—',
-            students_list: studentsList || 'Нет регистраций',
+            participants_list: participantsList || 'Нет регистраций',
             published_at: formatDateRu(ol.published_at),
             author_name: ol.author_name || '—'
         });
@@ -105,8 +128,10 @@ export async function buildRegistrationsWorkbook({ olympiads, registrations, cla
         title: 'ИТОГО РЕГИСТРАЦИЙ',
         status: '',
         reg_count: registrations.length,
+        student_count: totalStudentsRegs,
+        teacher_count: totalTeachersRegs,
         classes_breakdown: '',
-        students_list: '',
+        participants_list: '',
         published_at: '',
         author_name: ''
     });
@@ -115,7 +140,7 @@ export async function buildRegistrationsWorkbook({ olympiads, registrations, cla
         cell.font = { name: 'Calibri', size: 11, bold: true, color: { argb: 'FF12372A' } };
         cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF3E8C8' } };
     });
-    wsOlympiads.autoFilter = { from: 'A1', to: 'H1' };
+    wsOlympiads.autoFilter = { from: 'A1', to: 'J1' };
 
     // Лист 2: Детальный журнал (кто кого и куда зарегистрировал)
     const wsJournal = wb.addWorksheet('Список регистраций', {
@@ -123,8 +148,9 @@ export async function buildRegistrationsWorkbook({ olympiads, registrations, cla
     });
     wsJournal.columns = [
         { header: '№', key: 'idx', width: 6 },
-        { header: 'Класс', key: 'class_name', width: 12 },
-        { header: 'ФИО ученика', key: 'student_name', width: 32 },
+        { header: 'Тип', key: 'participant_type', width: 12 },
+        { header: 'Класс / Предмет', key: 'class_or_subject', width: 20 },
+        { header: 'ФИО участника', key: 'participant_name', width: 32 },
         { header: 'Олимпиада / Конкурс', key: 'olympiad_title', width: 44 },
         { header: 'Кто зарегистрировал', key: 'registered_by', width: 30 },
         { header: 'Telegram', key: 'tg_username', width: 18 },
@@ -133,10 +159,12 @@ export async function buildRegistrationsWorkbook({ olympiads, registrations, cla
     styleHeaderRow(wsJournal.getRow(1));
 
     registrations.forEach((reg, i) => {
+        const isTeacher = reg.participant_type === 'teacher';
         wsJournal.addRow({
             idx: i + 1,
-            class_name: reg.class_name,
-            student_name: reg.student_name,
+            participant_type: isTeacher ? 'Учитель' : 'Ученик',
+            class_or_subject: isTeacher ? (reg.subject || 'Учитель') : reg.class_name,
+            participant_name: reg.participant_name || reg.student_name,
             olympiad_title: reg.olympiad_title,
             registered_by: reg.registered_by_name,
             tg_username: reg.registered_by_tg_username ? `@${reg.registered_by_tg_username}` : '—',
@@ -144,7 +172,7 @@ export async function buildRegistrationsWorkbook({ olympiads, registrations, cla
         });
     });
     styleDataRows(wsJournal, 2);
-    wsJournal.autoFilter = { from: 'A1', to: 'G1' };
+    wsJournal.autoFilter = { from: 'A1', to: 'H1' };
 
     // Лист 3: Статистика по классам
     const wsClasses = wb.addWorksheet('По классам', {
@@ -176,7 +204,7 @@ export async function buildRegistrationsWorkbook({ olympiads, registrations, cla
     styleDataRows(wsClasses, 2);
     wsClasses.autoFilter = { from: 'A1', to: 'F1' };
 
-    // Лист 4: Статистика по учителям
+    // Лист 4: Статистика по регистраторам (учителям)
     const wsTeachers = wb.addWorksheet('По учителям', {
         views: [{ state: 'frozen', ySplit: 1 }]
     });
@@ -185,6 +213,7 @@ export async function buildRegistrationsWorkbook({ olympiads, registrations, cla
         { header: 'Учитель / Регистратор', key: 'name', width: 34 },
         { header: 'Всего регистраций', key: 'registrations_count', width: 20 },
         { header: 'Уникальных учеников', key: 'unique_students', width: 22 },
+        { header: 'Уникальных учителей', key: 'unique_teachers', width: 22 },
         { header: 'Олимпиад охвачено', key: 'unique_olympiads', width: 22 }
     ];
     styleHeaderRow(wsTeachers.getRow(1));
@@ -195,11 +224,42 @@ export async function buildRegistrationsWorkbook({ olympiads, registrations, cla
             name: t.name,
             registrations_count: t.registrations_count,
             unique_students: t.unique_students,
+            unique_teachers: t.unique_teachers || 0,
             unique_olympiads: t.unique_olympiads
         });
     });
     styleDataRows(wsTeachers, 2);
-    wsTeachers.autoFilter = { from: 'A1', to: 'E1' };
+    wsTeachers.autoFilter = { from: 'A1', to: 'F1' };
+
+    // Лист 5: Учителя-участники олимпиад
+    const teacherOnlyRegs = registrations.filter((r) => r.participant_type === 'teacher');
+    const wsTeacherParticipants = wb.addWorksheet('Учителя-участники', {
+        views: [{ state: 'frozen', ySplit: 1 }]
+    });
+    wsTeacherParticipants.columns = [
+        { header: '№', key: 'idx', width: 6 },
+        { header: 'ФИО учителя', key: 'teacher_name', width: 34 },
+        { header: 'Предмет', key: 'subject', width: 24 },
+        { header: 'Олимпиада / Конкурс', key: 'olympiad_title', width: 44 },
+        { header: 'Кто зарегистрировал', key: 'registered_by', width: 30 },
+        { header: 'Telegram', key: 'tg_username', width: 18 },
+        { header: 'Дата и время', key: 'created_at', width: 20 }
+    ];
+    styleHeaderRow(wsTeacherParticipants.getRow(1));
+
+    teacherOnlyRegs.forEach((reg, i) => {
+        wsTeacherParticipants.addRow({
+            idx: i + 1,
+            teacher_name: reg.participant_name || reg.student_name,
+            subject: reg.subject || '—',
+            olympiad_title: reg.olympiad_title,
+            registered_by: reg.registered_by_name,
+            tg_username: reg.registered_by_tg_username ? `@${reg.registered_by_tg_username}` : '—',
+            created_at: formatDateRu(reg.created_at)
+        });
+    });
+    styleDataRows(wsTeacherParticipants, 2);
+    wsTeacherParticipants.autoFilter = { from: 'A1', to: 'G1' };
 
     return Buffer.from(await wb.xlsx.writeBuffer());
 }

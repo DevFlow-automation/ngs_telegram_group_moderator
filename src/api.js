@@ -67,10 +67,11 @@ async function fetchAdminReportData(filters = {}) {
 
     const olympiadId = filters.olympiadId ? Number(filters.olympiadId) : null;
     const classId = filters.classId ? Number(filters.classId) : null;
+    const participantType = (filters.participantType || '').trim().toLowerCase();
     const teacherQuery = (filters.teacher || '').trim().toLowerCase();
     const searchQuery = (filters.q || '').trim().toLowerCase();
 
-    const [olympiadsRes, regsRes, classesRes, studentsRes, teachersRes] = await Promise.all([
+    const [olympiadsRes, regsRes, teacherRegsRes, classesRes, studentsRes, teachersRes] = await Promise.all([
         sql`SELECT * FROM olympiads ORDER BY is_active DESC, published_at DESC, id DESC;`,
         sql`
             SELECT
@@ -96,6 +97,25 @@ async function fetchAdminReportData(filters = {}) {
         `,
         sql`
             SELECT
+                tr.id,
+                tr.participant_teacher_id,
+                tr.olympiad_id,
+                tr.registrar_teacher_id,
+                tr.registered_by_name,
+                tr.registered_by_tg_id,
+                tr.registered_by_tg_username,
+                tr.created_at,
+                t.full_name AS teacher_name,
+                t.subject AS teacher_subject,
+                o.title AS olympiad_title,
+                o.is_active AS olympiad_active
+            FROM teacher_registrations tr
+            JOIN teachers t ON t.id = tr.participant_teacher_id
+            JOIN olympiads o ON o.id = tr.olympiad_id
+            ORDER BY tr.created_at DESC, tr.id DESC;
+        `,
+        sql`
+            SELECT
                 c.id,
                 c.name,
                 c.grade,
@@ -117,12 +137,50 @@ async function fetchAdminReportData(filters = {}) {
         sql`SELECT * FROM teachers ORDER BY full_name ASC;`
     ]);
 
-    let filteredRegs = regsRes.rows;
+    const normalizedStudentRegs = regsRes.rows.map((r) => ({
+        ...r,
+        participant_type: 'student',
+        participant_teacher_id: null,
+        participant_name: r.student_name,
+        subject: ''
+    }));
+
+    const normalizedTeacherRegs = teacherRegsRes.rows.map((tr) => ({
+        id: tr.id,
+        participant_type: 'teacher',
+        student_id: null,
+        participant_teacher_id: tr.participant_teacher_id,
+        olympiad_id: tr.olympiad_id,
+        teacher_id: tr.registrar_teacher_id,
+        registered_by_name: tr.registered_by_name,
+        registered_by_tg_id: tr.registered_by_tg_id,
+        registered_by_tg_username: tr.registered_by_tg_username,
+        created_at: tr.created_at,
+        student_name: tr.teacher_name,
+        participant_name: tr.teacher_name,
+        class_id: null,
+        class_name: 'Учитель',
+        class_grade: null,
+        subject: tr.teacher_subject || '',
+        olympiad_title: tr.olympiad_title,
+        olympiad_active: tr.olympiad_active
+    }));
+
+    const allRegistrations = [...normalizedStudentRegs, ...normalizedTeacherRegs].sort((a, b) => {
+        const diff = new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+        if (diff !== 0) return diff;
+        return Number(b.id) - Number(a.id);
+    });
+
+    let filteredRegs = allRegistrations;
     if (olympiadId) {
         filteredRegs = filteredRegs.filter((r) => Number(r.olympiad_id) === olympiadId);
     }
+    if (participantType === 'student' || participantType === 'teacher') {
+        filteredRegs = filteredRegs.filter((r) => r.participant_type === participantType);
+    }
     if (classId) {
-        filteredRegs = filteredRegs.filter((r) => Number(r.class_id) === classId);
+        filteredRegs = filteredRegs.filter((r) => r.participant_type === 'student' && Number(r.class_id) === classId);
     }
     if (teacherQuery) {
         filteredRegs = filteredRegs.filter((r) =>
@@ -131,8 +189,9 @@ async function fetchAdminReportData(filters = {}) {
     }
     if (searchQuery) {
         filteredRegs = filteredRegs.filter((r) =>
-            String(r.student_name || '').toLowerCase().includes(searchQuery) ||
+            String(r.participant_name || '').toLowerCase().includes(searchQuery) ||
             String(r.class_name || '').toLowerCase().includes(searchQuery) ||
+            String(r.subject || '').toLowerCase().includes(searchQuery) ||
             String(r.olympiad_title || '').toLowerCase().includes(searchQuery) ||
             String(r.registered_by_name || '').toLowerCase().includes(searchQuery)
         );
@@ -142,7 +201,7 @@ async function fetchAdminReportData(filters = {}) {
         ? olympiadsRes.rows.filter((o) => Number(o.id) === olympiadId)
         : olympiadsRes.rows;
 
-    // Статистика по учителям
+    // Статистика по учителям (регистраторам)
     const teacherMap = new Map();
     for (const reg of filteredRegs) {
         const key = reg.registered_by_name || 'Не указан';
@@ -151,12 +210,17 @@ async function fetchAdminReportData(filters = {}) {
                 name: key,
                 registrations_count: 0,
                 studentsSet: new Set(),
+                teachersSet: new Set(),
                 olympiadsSet: new Set()
             });
         }
         const entry = teacherMap.get(key);
         entry.registrations_count++;
-        entry.studentsSet.add(reg.student_id);
+        if (reg.participant_type === 'teacher') {
+            entry.teachersSet.add(reg.participant_teacher_id);
+        } else {
+            entry.studentsSet.add(reg.student_id);
+        }
         entry.olympiadsSet.add(reg.olympiad_id);
     }
 
@@ -165,13 +229,14 @@ async function fetchAdminReportData(filters = {}) {
             name: e.name,
             registrations_count: e.registrations_count,
             unique_students: e.studentsSet.size,
+            unique_teachers: e.teachersSet.size,
             unique_olympiads: e.olympiadsSet.size
         }))
         .sort((a, b) => b.registrations_count - a.registrations_count);
 
-    // Обогащаем олимпиады статистикой и списком учеников
+    // Обогащаем олимпиады статистикой и списком участников (учеников и учителей)
     const regsByOlympiad = new Map();
-    for (const reg of regsRes.rows) {
+    for (const reg of allRegistrations) {
         if (!regsByOlympiad.has(reg.olympiad_id)) regsByOlympiad.set(reg.olympiad_id, []);
         regsByOlympiad.get(reg.olympiad_id).push(reg);
     }
@@ -179,18 +244,31 @@ async function fetchAdminReportData(filters = {}) {
     const olympiadsEnriched = olympiadsRes.rows.map((ol) => {
         const list = regsByOlympiad.get(ol.id) || [];
         const byClass = {};
+        let studentCount = 0;
+        let teacherCount = 0;
         for (const r of list) {
-            byClass[r.class_name] = (byClass[r.class_name] || 0) + 1;
+            if (r.participant_type === 'teacher') {
+                teacherCount++;
+            } else {
+                studentCount++;
+                byClass[r.class_name] = (byClass[r.class_name] || 0) + 1;
+            }
         }
         return {
             ...ol,
             registrations_count: list.length,
+            student_registrations_count: studentCount,
+            teacher_registrations_count: teacherCount,
             class_breakdown: byClass,
             participants: list.map((r) => ({
                 registration_id: r.id,
+                participant_type: r.participant_type,
                 student_id: r.student_id,
-                student_name: r.student_name,
+                participant_teacher_id: r.participant_teacher_id,
+                participant_name: r.participant_name,
+                student_name: r.participant_name,
                 class_name: r.class_name,
+                subject: r.subject,
                 registered_by_name: r.registered_by_name,
                 created_at: r.created_at
             }))
@@ -198,13 +276,17 @@ async function fetchAdminReportData(filters = {}) {
     });
 
     const uniqueStudentsCount = new Set(regsRes.rows.map((r) => r.student_id)).size;
+    const uniqueTeachersCount = new Set(teacherRegsRes.rows.map((r) => r.participant_teacher_id)).size;
 
     return {
         kpis: {
             total_olympiads: olympiadsRes.rows.length,
             active_olympiads: olympiadsRes.rows.filter((o) => o.is_active).length,
-            total_registrations: regsRes.rows.length,
+            total_registrations: allRegistrations.length,
+            student_registrations: regsRes.rows.length,
+            teacher_registrations: teacherRegsRes.rows.length,
             unique_students_registered: uniqueStudentsCount,
+            unique_teachers_registered: uniqueTeachersCount,
             total_students: studentsRes.rows.length,
             total_classes: classesRes.rows.length,
             total_teachers: teachersRes.rows.length,
@@ -213,7 +295,7 @@ async function fetchAdminReportData(filters = {}) {
         olympiads: olympiadsEnriched,
         filteredOlympiads,
         registrations: filteredRegs,
-        allRegistrations: regsRes.rows,
+        allRegistrations,
         classStats: classesRes.rows,
         students: studentsRes.rows,
         teachers: teachersRes.rows,
@@ -277,15 +359,21 @@ export async function handleApiRequest(req, res, urlObj) {
 
         // 1. Bootstrap для Mini App / сайта
         if (pathname === '/api/bootstrap' && method === 'GET') {
-            const [olympiadsRes, classesRes, teachersRes, totalRegsRes] = await Promise.all([
+            const [olympiadsRes, classesRes, teachersRes, teacherRegsRes, totalStudentRegsRes, totalTeacherRegsRes] = await Promise.all([
                 sql`
                     SELECT
                         o.*,
-                        COUNT(r.id)::int AS registrations_count
+                        COALESCE(sr.cnt, 0)::int AS student_registrations_count,
+                        COALESCE(tr.cnt, 0)::int AS teacher_registrations_count,
+                        (COALESCE(sr.cnt, 0) + COALESCE(tr.cnt, 0))::int AS registrations_count
                     FROM olympiads o
-                    LEFT JOIN registrations r ON r.olympiad_id = o.id
+                    LEFT JOIN (
+                        SELECT olympiad_id, COUNT(*)::int AS cnt FROM registrations GROUP BY olympiad_id
+                    ) sr ON sr.olympiad_id = o.id
+                    LEFT JOIN (
+                        SELECT olympiad_id, COUNT(*)::int AS cnt FROM teacher_registrations GROUP BY olympiad_id
+                    ) tr ON tr.olympiad_id = o.id
                     WHERE o.is_active = TRUE
-                    GROUP BY o.id
                     ORDER BY o.published_at DESC, o.id DESC;
                 `,
                 sql`
@@ -303,12 +391,41 @@ export async function handleApiRequest(req, res, urlObj) {
                     ORDER BY c.grade ASC, c.name ASC;
                 `,
                 sql`SELECT id, full_name, subject, telegram_id, telegram_username FROM teachers ORDER BY full_name ASC;`,
-                sql`SELECT COUNT(*)::int AS total FROM registrations;`
+                sql`
+                    SELECT
+                        tr.id,
+                        tr.participant_teacher_id,
+                        tr.olympiad_id,
+                        tr.registrar_teacher_id,
+                        tr.registered_by_name,
+                        tr.registered_by_tg_username,
+                        tr.created_at,
+                        o.title AS olympiad_title,
+                        o.is_active AS olympiad_active
+                    FROM teacher_registrations tr
+                    JOIN olympiads o ON o.id = tr.olympiad_id
+                    ORDER BY tr.created_at DESC;
+                `,
+                sql`SELECT COUNT(*)::int AS total FROM registrations;`,
+                sql`SELECT COUNT(*)::int AS total FROM teacher_registrations;`
             ]);
+
+            const regsByTeacher = new Map();
+            for (const reg of teacherRegsRes.rows) {
+                if (!regsByTeacher.has(reg.participant_teacher_id)) {
+                    regsByTeacher.set(reg.participant_teacher_id, []);
+                }
+                regsByTeacher.get(reg.participant_teacher_id).push(reg);
+            }
+
+            const teachersWithRegs = teachersRes.rows.map((t) => ({
+                ...t,
+                registrations: regsByTeacher.get(t.id) || []
+            }));
 
             let matchedTeacher = null;
             if (actor.tgUser?.id) {
-                matchedTeacher = teachersRes.rows.find(
+                matchedTeacher = teachersWithRegs.find(
                     (t) => t.telegram_id && Number(t.telegram_id) === Number(actor.tgUser.id)
                 ) || null;
             }
@@ -320,12 +437,17 @@ export async function handleApiRequest(req, res, urlObj) {
                 if (rows.length > 0) isModerator = true;
             }
 
+            const studentTotal = totalStudentRegsRes.rows[0]?.total || 0;
+            const teacherTotal = totalTeacherRegsRes.rows[0]?.total || 0;
+
             return sendJson(res, 200, {
                 olympiads: olympiadsRes.rows,
                 classes: classesRes.rows,
-                teachers: teachersRes.rows,
+                teachers: teachersWithRegs,
                 stats: {
-                    total_registrations: totalRegsRes.rows[0]?.total || 0,
+                    total_registrations: studentTotal + teacherTotal,
+                    student_registrations: studentTotal,
+                    teacher_registrations: teacherTotal,
                     active_olympiads: olympiadsRes.rows.length
                 },
                 me: {
@@ -469,6 +591,96 @@ export async function handleApiRequest(req, res, urlObj) {
             return sendJson(res, 400, { error: 'Передайте id или student_id + olympiad_id' });
         }
 
+        // 5. Регистрация учителя на олимпиаду (поддерживает несколько олимпиад на учителя)
+        if (pathname === '/api/teacher-registrations' && method === 'POST') {
+            const body = await readJsonBody(req);
+            const participantTeacherId = Number(body.participant_teacher_id);
+            const olympiadId = Number(body.olympiad_id);
+            const registrarTeacherId = body.registrar_teacher_id
+                ? Number(body.registrar_teacher_id)
+                : (body.teacher_id ? Number(body.teacher_id) : null);
+            let registeredByName = String(body.teacher_name || '').trim();
+
+            if (!participantTeacherId || !olympiadId) {
+                return sendJson(res, 400, { error: 'Укажите учителя и олимпиаду' });
+            }
+
+            if (registrarTeacherId) {
+                const { rows: tRows } = await sql`SELECT * FROM teachers WHERE id = ${registrarTeacherId};`;
+                if (tRows[0]) {
+                    registeredByName = tRows[0].full_name;
+                    if (actor.tgUser?.id && !tRows[0].telegram_id) {
+                        await sql`
+                            UPDATE teachers
+                            SET telegram_id = ${Number(actor.tgUser.id)},
+                                telegram_username = COALESCE(${actor.tgUser.username || null}, telegram_username)
+                            WHERE id = ${registrarTeacherId}
+                              AND NOT EXISTS (SELECT 1 FROM teachers WHERE telegram_id = ${Number(actor.tgUser.id)});
+                        `.catch(() => {});
+                    }
+                }
+            }
+
+            if (!registeredByName && actor.tgUser) {
+                registeredByName = [actor.tgUser.first_name, actor.tgUser.last_name].filter(Boolean).join(' ')
+                    || (actor.tgUser.username ? `@${actor.tgUser.username}` : 'Учитель Telegram');
+            }
+
+            if (!registeredByName) {
+                return sendJson(res, 400, { error: 'Выберите или укажите ФИО учителя, кто регистрирует' });
+            }
+
+            const tgId = actor.tgUser?.id ? Number(actor.tgUser.id) : null;
+            const tgUsername = actor.tgUser?.username || null;
+
+            const { rows } = await sql`
+                INSERT INTO teacher_registrations (
+                    participant_teacher_id, olympiad_id, registrar_teacher_id, registered_by_name,
+                    registered_by_tg_id, registered_by_tg_username
+                )
+                VALUES (
+                    ${participantTeacherId}, ${olympiadId}, ${registrarTeacherId}, ${registeredByName},
+                    ${tgId}, ${tgUsername}
+                )
+                ON CONFLICT (participant_teacher_id, olympiad_id) DO UPDATE
+                SET registrar_teacher_id = EXCLUDED.registrar_teacher_id,
+                    registered_by_name = EXCLUDED.registered_by_name,
+                    registered_by_tg_id = COALESCE(EXCLUDED.registered_by_tg_id, teacher_registrations.registered_by_tg_id),
+                    registered_by_tg_username = COALESCE(EXCLUDED.registered_by_tg_username, teacher_registrations.registered_by_tg_username)
+                RETURNING *;
+            `;
+
+            const { rows: olRows } = await sql`SELECT title FROM olympiads WHERE id = ${olympiadId};`;
+            return sendJson(res, 200, {
+                registration: {
+                    ...rows[0],
+                    olympiad_title: olRows[0]?.title || ''
+                }
+            });
+        }
+
+        // 5б. Отмена регистрации учителя с олимпиады
+        if (pathname === '/api/teacher-registrations' && method === 'DELETE') {
+            const regId = urlObj.searchParams.get('id') ? Number(urlObj.searchParams.get('id')) : null;
+            const participantTeacherId = urlObj.searchParams.get('participant_teacher_id')
+                ? Number(urlObj.searchParams.get('participant_teacher_id'))
+                : (urlObj.searchParams.get('teacher_id') ? Number(urlObj.searchParams.get('teacher_id')) : null);
+            const olympiadId = urlObj.searchParams.get('olympiad_id') ? Number(urlObj.searchParams.get('olympiad_id')) : null;
+
+            if (regId) {
+                await sql`DELETE FROM teacher_registrations WHERE id = ${regId};`;
+                return sendJson(res, 200, { ok: true });
+            }
+            if (participantTeacherId && olympiadId) {
+                await sql`
+                    DELETE FROM teacher_registrations
+                    WHERE participant_teacher_id = ${participantTeacherId} AND olympiad_id = ${olympiadId};
+                `;
+                return sendJson(res, 200, { ok: true });
+            }
+            return sendJson(res, 400, { error: 'Передайте id или participant_teacher_id + olympiad_id' });
+        }
+
         // Все маршруты ниже требуют прав администратора
         if (pathname.startsWith('/api/admin/')) {
             if (!actor.isAdmin) {
@@ -480,6 +692,7 @@ export async function handleApiRequest(req, res, urlObj) {
                 const data = await fetchAdminReportData({
                     olympiadId: urlObj.searchParams.get('olympiadId'),
                     classId: urlObj.searchParams.get('classId'),
+                    participantType: urlObj.searchParams.get('participantType'),
                     teacher: urlObj.searchParams.get('teacher'),
                     q: urlObj.searchParams.get('q')
                 });
@@ -495,6 +708,7 @@ export async function handleApiRequest(req, res, urlObj) {
                 const data = await fetchAdminReportData({
                     olympiadId: urlObj.searchParams.get('olympiadId'),
                     classId: urlObj.searchParams.get('classId'),
+                    participantType: urlObj.searchParams.get('participantType'),
                     teacher: urlObj.searchParams.get('teacher'),
                     q: urlObj.searchParams.get('q')
                 });
@@ -705,6 +919,7 @@ export async function handleApiRequest(req, res, urlObj) {
             if (pathname === '/api/admin/demo/clear' && method === 'POST') {
                 const body = await readJsonBody(req);
                 await sql`DELETE FROM registrations;`;
+                await sql`DELETE FROM teacher_registrations;`;
                 await sql`DELETE FROM students;`;
                 await sql`DELETE FROM classes;`;
                 await sql`DELETE FROM teachers;`;

@@ -6,7 +6,7 @@ export function renderMiniAppHtml() {
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>NGS Олимпиадник — Регистрация учеников</title>
+  <title>NGS Олимпиадник — Регистрация на олимпиады</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
     ${SHARED_STYLES}
@@ -398,6 +398,88 @@ export function renderMiniAppHtml() {
       padding: 20px;
     }
 
+    .mode-switch-bar {
+      display: inline-flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      padding: 5px;
+      background: var(--surface-tint);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      margin-bottom: 16px;
+    }
+
+    .mode-switch-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 14px;
+      border-radius: 10px;
+      border: none;
+      background: transparent;
+      font-weight: 700;
+      font-size: 13.5px;
+      color: var(--ink-2);
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .mode-switch-btn:hover {
+      color: var(--pine);
+      background: rgba(18, 55, 42, 0.06);
+    }
+
+    .mode-switch-btn.active {
+      background: var(--pine);
+      color: #FFFDF8;
+      box-shadow: 0 4px 12px rgba(18, 55, 42, 0.2);
+    }
+
+    .mode-count {
+      font-size: 11.5px;
+      padding: 1px 7px;
+      border-radius: 999px;
+      background: rgba(18, 55, 42, 0.1);
+      color: var(--pine);
+    }
+
+    .mode-switch-btn.active .mode-count {
+      background: rgba(255, 255, 255, 0.2);
+      color: #FFFDF8;
+    }
+
+    .self-reg-banner {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 14px 16px;
+      margin-bottom: 14px;
+      border-radius: 15px;
+      background: linear-gradient(135deg, var(--gold-soft), #FFF9EC);
+      border: 1.5px solid rgba(217, 119, 6, 0.35);
+    }
+
+    .self-reg-title {
+      font-weight: 700;
+      font-size: 14.5px;
+      color: var(--pine);
+    }
+
+    .self-reg-sub {
+      font-size: 12.5px;
+      color: var(--ink-2);
+      margin-top: 2px;
+    }
+
+    .self-reg-actions {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+    }
+
     .class-selector-row {
       display: grid;
       grid-template-columns: minmax(260px, 420px) 1fr;
@@ -772,7 +854,7 @@ export function renderMiniAppHtml() {
         <div class="brand-mark">NGS</div>
         <div class="brand-text">
           <div class="brand-title">NGS Олимпиадник</div>
-          <div class="brand-sub">Регистрация учеников • Тема «Олимпиады» #15</div>
+          <div class="brand-sub">Регистрация учеников и учителей • Тема «Олимпиады» #15</div>
         </div>
       </div>
       <div class="topbar-actions">
@@ -816,7 +898,7 @@ export function renderMiniAppHtml() {
           </div>
         </div>
         <div style="font-size:12px; color:var(--muted);">
-          Один ученик может быть зарегистрирован сразу на несколько олимпиад и конкурсов.
+          Один ученик или учитель может быть зарегистрирован сразу на несколько олимпиад и конкурсов.
         </div>
       </div>
     </section>
@@ -832,74 +914,134 @@ export function renderMiniAppHtml() {
     </section>
 
     <section class="card workspace-card">
-      <div class="class-selector-row">
-        <div>
-          <div class="field-label">
-            <span>Шаг 1 — Выберите класс</span>
-            <span class="mono" id="classesCountLabel"></span>
-          </div>
-          <div class="floating-select-wrap" id="classSelectWrap">
-            <button type="button" class="select-trigger" id="classTrigger">
-              <div class="select-trigger-main">
-                <div class="class-badge-lg placeholder" id="classBadgeLg">?</div>
-                <div style="min-width:0;">
-                  <div class="trigger-text-title" id="classTriggerTitle">Выберите класс из списка</div>
-                  <div class="trigger-text-sub" id="classTriggerSub">Нажмите, чтобы открыть всплывающий список классов</div>
-                </div>
-              </div>
-              <span class="chevron">▾</span>
-            </button>
+      <div class="mode-switch-bar" id="modeSwitchBar">
+        <button type="button" class="mode-switch-btn active" data-mode="students">
+          <span>🎓 Ученики</span>
+          <span class="mode-count mono" id="studentsModeBadge">0</span>
+        </button>
+        <button type="button" class="mode-switch-btn" data-mode="teachers">
+          <span>👩‍🏫 Учителя</span>
+          <span class="mode-count mono" id="teachersModeBadge">0</span>
+        </button>
+      </div>
 
-            <div class="popover-panel" id="classPopover">
-              <input type="text" class="input" id="classSearch" placeholder="Быстрый поиск класса (например: 9А, 10Б)..." />
-              <div class="grade-pills" id="gradePills"></div>
-              <div class="class-options-grid" id="classOptionsGrid"></div>
+      <div id="studentsWorkspace">
+        <div class="class-selector-row">
+          <div>
+            <div class="field-label">
+              <span>Шаг 1 — Выберите класс</span>
+              <span class="mono" id="classesCountLabel"></span>
+            </div>
+            <div class="floating-select-wrap" id="classSelectWrap">
+              <button type="button" class="select-trigger" id="classTrigger">
+                <div class="select-trigger-main">
+                  <div class="class-badge-lg placeholder" id="classBadgeLg">?</div>
+                  <div style="min-width:0;">
+                    <div class="trigger-text-title" id="classTriggerTitle">Выберите класс из списка</div>
+                    <div class="trigger-text-sub" id="classTriggerSub">Нажмите, чтобы открыть всплывающий список классов</div>
+                  </div>
+                </div>
+                <span class="chevron">▾</span>
+              </button>
+
+              <div class="popover-panel" id="classPopover">
+                <input type="text" class="input" id="classSearch" placeholder="Быстрый поиск класса (например: 9А, 10Б)..." />
+                <div class="grade-pills" id="gradePills"></div>
+                <div class="class-options-grid" id="classOptionsGrid"></div>
+              </div>
+            </div>
+          </div>
+
+          <div id="classSummaryBox" style="display:none; padding: 12px 16px; border-radius: 15px; background: var(--surface-tint); border: 1px solid var(--line);">
+            <div style="display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px;">
+              <div>
+                <div style="font-weight:700; font-size:14px; color:var(--pine);" id="classSummaryTitle"></div>
+                <div style="font-size:12.5px; color:var(--muted);" id="classSummarySub"></div>
+              </div>
+              <span class="pill pill-emerald mono" id="classSummaryBadge"></span>
             </div>
           </div>
         </div>
 
-        <div id="classSummaryBox" style="display:none; padding: 12px 16px; border-radius: 15px; background: var(--surface-tint); border: 1px solid var(--line);">
+        <div id="studentsSection" style="display:none;">
+          <div class="table-tools">
+            <div style="flex:1; min-width:210px; max-width:340px;">
+              <input type="text" class="input" id="studentSearch" placeholder="🔎 Поиск ученика по фамилии..." style="padding:8px 12px; font-size:13.5px;" />
+            </div>
+            <div class="filter-group" id="studentFilterGroup">
+              <button type="button" class="filter-btn active" data-filter="all">Все</button>
+              <button type="button" class="filter-btn" data-filter="registered">С олимпиадами</button>
+              <button type="button" class="filter-btn" data-filter="none">Без олимпиад</button>
+            </div>
+          </div>
+
+          <div class="students-table-wrap">
+            <table class="students-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Ученик</th>
+                  <th>Зарегистрирован на олимпиады</th>
+                  <th>Выбрать олимпиаду</th>
+                </tr>
+              </thead>
+              <tbody id="studentsTbody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div id="studentsPlaceholder" class="empty-state">
+          <div class="empty-state-icon">🎓</div>
+          <h3>Выберите класс выше</h3>
+          <p>После выбора класса здесь появится таблица учеников с выпадающим списком олимпиад для быстрой регистрации.</p>
+        </div>
+      </div>
+
+      <div id="teachersWorkspace" style="display:none;">
+        <div id="selfRegBanner" class="self-reg-banner" style="display:none;"></div>
+
+        <div id="teachersSummaryBox" style="display:none; padding: 12px 16px; border-radius: 15px; background: var(--surface-tint); border: 1px solid var(--line);">
           <div style="display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px;">
             <div>
-              <div style="font-weight:700; font-size:14px; color:var(--pine);" id="classSummaryTitle"></div>
-              <div style="font-size:12.5px; color:var(--muted);" id="classSummarySub"></div>
+              <div style="font-weight:700; font-size:14px; color:var(--pine);" id="teachersSummaryTitle"></div>
+              <div style="font-size:12.5px; color:var(--muted);" id="teachersSummarySub"></div>
             </div>
-            <span class="pill pill-emerald mono" id="classSummaryBadge"></span>
-          </div>
-        </div>
-      </div>
-
-      <div id="studentsSection" style="display:none;">
-        <div class="table-tools">
-          <div style="flex:1; min-width:210px; max-width:340px;">
-            <input type="text" class="input" id="studentSearch" placeholder="🔎 Поиск ученика по фамилии..." style="padding:8px 12px; font-size:13.5px;" />
-          </div>
-          <div class="filter-group" id="studentFilterGroup">
-            <button type="button" class="filter-btn active" data-filter="all">Все</button>
-            <button type="button" class="filter-btn" data-filter="registered">С олимпиадами</button>
-            <button type="button" class="filter-btn" data-filter="none">Без олимпиад</button>
+            <span class="pill pill-gold mono" id="teachersSummaryBadge"></span>
           </div>
         </div>
 
-        <div class="students-table-wrap">
-          <table class="students-table">
-            <thead>
-              <tr>
-                <th>#</th>
-                <th>Ученик</th>
-                <th>Зарегистрирован на олимпиады</th>
-                <th>Выбрать олимпиаду</th>
-              </tr>
-            </thead>
-            <tbody id="studentsTbody"></tbody>
-          </table>
-        </div>
-      </div>
+        <div id="teachersSection" style="display:none;">
+          <div class="table-tools">
+            <div style="flex:1; min-width:210px; max-width:360px;">
+              <input type="text" class="input" id="teacherPartSearch" placeholder="🔎 Поиск учителя по ФИО или предмету..." style="padding:8px 12px; font-size:13.5px;" />
+            </div>
+            <div class="filter-group" id="teacherFilterGroup">
+              <button type="button" class="filter-btn active" data-filter="all">Все</button>
+              <button type="button" class="filter-btn" data-filter="registered">С олимпиадами</button>
+              <button type="button" class="filter-btn" data-filter="none">Без олимпиад</button>
+            </div>
+          </div>
 
-      <div id="studentsPlaceholder" class="empty-state">
-        <div class="empty-state-icon">🎓</div>
-        <h3>Выберите класс выше</h3>
-        <p>После выбора класса здесь появится таблица учеников с выпадающим списком олимпиад для быстрой регистрации.</p>
+          <div class="students-table-wrap">
+            <table class="students-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Учитель</th>
+                  <th>Зарегистрирован на олимпиады</th>
+                  <th>Выбрать олимпиаду</th>
+                </tr>
+              </thead>
+              <tbody id="teachersTbody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div id="teachersEmptyState" class="empty-state" style="display:none;">
+          <div class="empty-state-icon">👩‍🏫</div>
+          <h3>Список учителей пока не загружен</h3>
+          <p>Добавьте или импортируйте список учителей в Админ-панели, чтобы регистрировать их на олимпиады и конкурсы.</p>
+        </div>
       </div>
     </section>
   </div>
@@ -927,15 +1069,18 @@ export function renderMiniAppHtml() {
       classes: [],
       teachers: [],
       me: null,
+      mode: 'students',
       spotlightOlympiadId: null,
       selectedClassId: null,
       students: [],
       selectedGradeFilter: 'all',
       studentFilter: 'all',
       studentSearch: '',
+      teacherFilter: 'all',
+      teacherPartSearch: '',
       selectedTeacherId: null,
       selectedTeacherName: '',
-      activePopoverStudentId: null,
+      activePopoverTarget: null,
       descExpanded: false
     };
 
@@ -1027,8 +1172,11 @@ export function renderMiniAppHtml() {
       descEl.classList.toggle('expanded', state.descExpanded);
 
       const longText = (ol.description || '').length > 170;
+      const stCnt = Number(ol.student_registrations_count ?? ol.registrations_count ?? 0);
+      const tCnt = Number(ol.teacher_registrations_count || 0);
       $('spotlightMeta').innerHTML =
-        '<span class="pill pill-emerald mono">Записано: ' + (ol.registrations_count || 0) + '</span>' +
+        '<span class="pill pill-emerald mono">Учеников: ' + stCnt + '</span>' +
+        '<span class="pill pill-gold mono">Учителей: ' + tCnt + '</span>' +
         '<span class="pill pill-muted">' + escapeHtml(ol.author_name || 'Модератор') + '</span>' +
         '<span class="mono">' + escapeHtml(formatShortDate(ol.published_at)) + '</span>' +
         (longText ? '<button type="button" class="expand-link" id="toggleDescBtn">' + (state.descExpanded ? 'Свернуть' : 'Читать полностью') + '</button>' : '');
@@ -1052,11 +1200,14 @@ export function renderMiniAppHtml() {
       $('olympiadsCountBadge').textContent = state.olympiads.length + ' шт.';
       $('olympiadStrip').innerHTML = state.olympiads.map((ol) => {
         const active = Number(ol.id) === Number(state.spotlightOlympiadId);
+        const stCnt = Number(ol.student_registrations_count ?? ol.registrations_count ?? 0);
+        const tCnt = Number(ol.teacher_registrations_count || 0);
+        const countLabel = tCnt > 0 ? (stCnt + ' уч. • ' + tCnt + ' пед.') : (stCnt + ' уч.');
         return (
           '<button type="button" class="ol-chip' + (active ? ' active' : '') + '" data-ol-id="' + ol.id + '">' +
             '<div class="ol-chip-title">' + (active ? '★ ' : '') + escapeHtml(ol.title) + '</div>' +
             '<div class="ol-chip-meta">' +
-              '<span class="mono">' + (ol.registrations_count || 0) + ' уч.</span>' +
+              '<span class="mono">' + countLabel + '</span>' +
               '<span>• ' + escapeHtml(formatShortDate(ol.published_at)) + '</span>' +
             '</div>' +
           '</button>'
@@ -1070,6 +1221,7 @@ export function renderMiniAppHtml() {
           renderSpotlight();
           renderOlympiadStrip();
           if (state.selectedClassId) renderStudentsTable();
+          if (state.mode === 'teachers') renderTeachersWorkspace();
           haptic('light');
         };
       });
@@ -1136,6 +1288,7 @@ export function renderMiniAppHtml() {
           localStorage.setItem('ngs_teacher_name', t.full_name);
           closePopovers();
           renderTeacherSelector();
+          if (state.mode === 'teachers') renderTeachersWorkspace();
           haptic('light');
         };
       });
@@ -1323,7 +1476,180 @@ export function renderMiniAppHtml() {
       $('studentsTbody').querySelectorAll('[data-open-ol-select]').forEach((btn) => {
         btn.onclick = (e) => {
           e.stopPropagation();
-          openOlympiadPopover(Number(btn.dataset.openOlSelect), btn);
+          openOlympiadPopover('student', Number(btn.dataset.openOlSelect), btn);
+        };
+      });
+    }
+
+    function setMode(mode) {
+      state.mode = mode === 'teachers' ? 'teachers' : 'students';
+      $('studentsWorkspace').style.display = state.mode === 'students' ? 'block' : 'none';
+      $('teachersWorkspace').style.display = state.mode === 'teachers' ? 'block' : 'none';
+      $('modeSwitchBar').querySelectorAll('.mode-switch-btn').forEach((btn) => {
+        btn.classList.toggle('active', btn.dataset.mode === state.mode);
+      });
+      if (state.mode === 'teachers') {
+        renderTeachersWorkspace();
+      }
+    }
+
+    function renderTeachersWorkspace() {
+      const teachers = state.teachers || [];
+      if (teachers.length === 0) {
+        $('teachersEmptyState').style.display = 'block';
+        $('teachersSection').style.display = 'none';
+        $('teachersSummaryBox').style.display = 'none';
+        $('selfRegBanner').style.display = 'none';
+        return;
+      }
+
+      $('teachersEmptyState').style.display = 'none';
+      $('teachersSection').style.display = 'block';
+      $('teachersSummaryBox').style.display = 'block';
+
+      const withRegs = teachers.filter((t) => t.registrations && t.registrations.length > 0).length;
+      const totalRegs = teachers.reduce((acc, t) => acc + (t.registrations ? t.registrations.length : 0), 0);
+      $('teachersSummaryTitle').textContent = 'Учителя — ' + teachers.length + ' в списке';
+      $('teachersSummarySub').textContent = 'Участвуют в олимпиадах: ' + withRegs + ' из ' + teachers.length;
+      $('teachersSummaryBadge').textContent = totalRegs + ' регистраций';
+
+      const spotlightOl = state.olympiads.find((o) => Number(o.id) === Number(state.spotlightOlympiadId));
+      const selfTeacher = state.selectedTeacherId
+        ? teachers.find((t) => Number(t.id) === Number(state.selectedTeacherId))
+        : null;
+
+      if (selfTeacher) {
+        const selfRegs = selfTeacher.registrations || [];
+        const isSelfOnSpotlight = spotlightOl && selfRegs.some((r) => Number(r.olympiad_id) === Number(spotlightOl.id));
+        $('selfRegBanner').style.display = 'flex';
+        $('selfRegBanner').innerHTML =
+          '<div style="min-width:0;">' +
+            '<div class="self-reg-title">👩‍🏫 ' + escapeHtml(selfTeacher.full_name) + '</div>' +
+            '<div class="self-reg-sub">' +
+              (selfTeacher.subject ? escapeHtml(selfTeacher.subject) + ' • ' : '') +
+              'Быстрая запись себя на олимпиаду' +
+            '</div>' +
+          '</div>' +
+          '<div class="self-reg-actions">' +
+            (spotlightOl
+              ? '<button type="button" class="quick-pin-btn' + (isSelfOnSpotlight ? ' registered' : '') + '" id="selfQuickBtn">' +
+                  (isSelfOnSpotlight ? '✓ Вы записаны на текущую' : '★ Записаться на текущую') +
+                '</button>'
+              : '') +
+            '<button type="button" class="row-ol-trigger" id="selfOlSelectBtn" style="flex:0 0 auto;">' +
+              '<span>' + (selfRegs.length > 0 ? 'Мои олимпиады (' + selfRegs.length + ')' : 'Выбрать олимпиады...') + '</span>' +
+              '<span>▾</span>' +
+            '</button>' +
+          '</div>';
+
+        const selfQuickBtn = $('selfQuickBtn');
+        if (selfQuickBtn && spotlightOl) {
+          selfQuickBtn.onclick = () => {
+            const already = (selfTeacher.registrations || []).some((r) => Number(r.olympiad_id) === Number(spotlightOl.id));
+            toggleTeacherRegistration(selfTeacher.id, spotlightOl.id, !already);
+          };
+        }
+        const selfOlSelectBtn = $('selfOlSelectBtn');
+        if (selfOlSelectBtn) {
+          selfOlSelectBtn.onclick = (e) => {
+            e.stopPropagation();
+            openOlympiadPopover('teacher', selfTeacher.id, selfOlSelectBtn);
+          };
+        }
+      } else {
+        $('selfRegBanner').style.display = 'none';
+      }
+
+      const q = state.teacherPartSearch.trim().toLowerCase();
+      const filtered = teachers.filter((t) => {
+        const matchQ = !q ||
+          t.full_name.toLowerCase().includes(q) ||
+          (t.subject || '').toLowerCase().includes(q);
+        const count = t.registrations ? t.registrations.length : 0;
+        const matchF =
+          state.teacherFilter === 'all' ||
+          (state.teacherFilter === 'registered' && count > 0) ||
+          (state.teacherFilter === 'none' && count === 0);
+        return matchQ && matchF;
+      });
+
+      if (filtered.length === 0) {
+        $('teachersTbody').innerHTML =
+          '<tr><td colspan="4" style="text-align:center; padding:32px; color:var(--muted);">Нет учителей по выбранному фильтру.</td></tr>';
+        return;
+      }
+
+      $('teachersTbody').innerHTML = filtered.map((teacher, idx) => {
+        const regs = teacher.registrations || [];
+        const isOnSpotlight = spotlightOl && regs.some((r) => Number(r.olympiad_id) === Number(spotlightOl.id));
+        const isSelf = Number(teacher.id) === Number(state.selectedTeacherId);
+
+        const tagsHtml = regs.length > 0
+          ? '<div class="reg-tags">' + regs.map((r) => (
+              '<span class="reg-tag" title="Зарегистрировал: ' + escapeHtml(r.registered_by_name) + '">' +
+                '<span class="reg-tag-text">' + escapeHtml(r.olympiad_title) + '</span>' +
+                '<span class="reg-tag-by">• ' + escapeHtml(shortTeacherName(r.registered_by_name)) + '</span>' +
+                '<button type="button" class="reg-tag-remove" data-remove-teacher="' + teacher.id + '" data-remove-ol="' + r.olympiad_id + '" title="Снять с олимпиады">×</button>' +
+              '</span>'
+            )).join('') + '</div>'
+          : '<span style="font-size:12.5px; color:var(--muted);">Пока не зарегистрирован</span>';
+
+        const quickBtn = spotlightOl
+          ? '<button type="button" class="quick-pin-btn' + (isOnSpotlight ? ' registered' : '') + '" data-quick-teacher="' + teacher.id + '" data-quick-ol="' + spotlightOl.id + '" title="' + escapeHtml(spotlightOl.title) + '">' +
+              (isOnSpotlight ? '✓ На текущей' : '★ На текущую') +
+            '</button>'
+          : '';
+
+        const selectLabel = regs.length > 0
+          ? 'Олимпиады (' + regs.length + ')'
+          : 'Выбрать олимпиаду...';
+
+        const subParts = [];
+        if (teacher.subject) subParts.push(escapeHtml(teacher.subject));
+        if (regs.length > 0) subParts.push('Олимпиад: ' + regs.length);
+
+        return (
+          '<tr>' +
+            '<td class="student-idx">' + String(idx + 1).padStart(2, '0') + '</td>' +
+            '<td>' +
+              '<div class="student-name">' +
+                escapeHtml(teacher.full_name) +
+                (isSelf ? ' <span class="pill pill-gold" style="font-size:10.5px; padding:1px 7px; margin-left:4px;">Вы</span>' : '') +
+              '</div>' +
+              (subParts.length > 0 ? '<div class="student-sub">' + subParts.join(' • ') + '</div>' : '') +
+            '</td>' +
+            '<td>' + tagsHtml + '</td>' +
+            '<td>' +
+              '<div class="row-select-cell">' +
+                quickBtn +
+                '<button type="button" class="row-ol-trigger" data-open-teacher-ol-select="' + teacher.id + '">' +
+                  '<span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + selectLabel + '</span>' +
+                  '<span>▾</span>' +
+                '</button>' +
+              '</div>' +
+            '</td>' +
+          '</tr>'
+        );
+      }).join('');
+
+      $('teachersTbody').querySelectorAll('[data-remove-teacher]').forEach((btn) => {
+        btn.onclick = () => toggleTeacherRegistration(Number(btn.dataset.removeTeacher), Number(btn.dataset.removeOl), false);
+      });
+
+      $('teachersTbody').querySelectorAll('[data-quick-teacher]').forEach((btn) => {
+        btn.onclick = () => {
+          const tid = Number(btn.dataset.quickTeacher);
+          const oid = Number(btn.dataset.quickOl);
+          const t = state.teachers.find((x) => Number(x.id) === tid);
+          const already = t && (t.registrations || []).some((r) => Number(r.olympiad_id) === oid);
+          toggleTeacherRegistration(tid, oid, !already);
+        };
+      });
+
+      $('teachersTbody').querySelectorAll('[data-open-teacher-ol-select]').forEach((btn) => {
+        btn.onclick = (e) => {
+          e.stopPropagation();
+          openOlympiadPopover('teacher', Number(btn.dataset.openTeacherOlSelect), btn);
         };
       });
     }
@@ -1334,12 +1660,19 @@ export function renderMiniAppHtml() {
       return parts[0] + ' ' + parts.slice(1).map((p) => p[0] + '.').join('');
     }
 
-    function openOlympiadPopover(studentId, anchorBtn) {
-      state.activePopoverStudentId = studentId;
-      const student = state.students.find((s) => Number(s.id) === Number(studentId));
-      if (!student) return;
+    function getActivePopoverTargetObj() {
+      if (!state.activePopoverTarget) return null;
+      const { type, id } = state.activePopoverTarget;
+      const list = type === 'teacher' ? state.teachers : state.students;
+      return list.find((item) => Number(item.id) === Number(id)) || null;
+    }
 
-      $('olPopoverStudent').textContent = student.full_name;
+    function openOlympiadPopover(type, targetId, anchorBtn) {
+      state.activePopoverTarget = { type, id: Number(targetId) };
+      const target = getActivePopoverTargetObj();
+      if (!target) return;
+
+      $('olPopoverStudent').textContent = (type === 'teacher' ? '👩‍🏫 ' : '') + target.full_name;
       $('olPopoverSearch').value = '';
       renderOlympiadPopoverList();
 
@@ -1365,14 +1698,15 @@ export function renderMiniAppHtml() {
     }
 
     function closeOlympiadPopover() {
-      state.activePopoverStudentId = null;
+      state.activePopoverTarget = null;
       $('olPopover').classList.remove('open');
       $('olBackdrop').classList.remove('open');
     }
 
     function renderOlympiadPopoverList() {
-      const student = state.students.find((s) => Number(s.id) === Number(state.activePopoverStudentId));
-      if (!student) return;
+      const target = getActivePopoverTargetObj();
+      if (!target || !state.activePopoverTarget) return;
+      const targetType = state.activePopoverTarget.type;
 
       const q = ($('olPopoverSearch').value || '').trim().toLowerCase();
       const sorted = [...state.olympiads].sort((a, b) => {
@@ -1388,7 +1722,7 @@ export function renderMiniAppHtml() {
       }
 
       $('olPopoverList').innerHTML = sorted.map((ol) => {
-        const reg = (student.registrations || []).find((r) => Number(r.olympiad_id) === Number(ol.id));
+        const reg = (target.registrations || []).find((r) => Number(r.olympiad_id) === Number(ol.id));
         const isChecked = Boolean(reg);
         const isSpotlight = Number(ol.id) === Number(state.spotlightOlympiadId);
         return (
@@ -1409,8 +1743,12 @@ export function renderMiniAppHtml() {
       $('olPopoverList').querySelectorAll('[data-toggle-ol]').forEach((btn) => {
         btn.onclick = () => {
           const oid = Number(btn.dataset.toggleOl);
-          const already = (student.registrations || []).some((r) => Number(r.olympiad_id) === oid);
-          toggleRegistration(student.id, oid, !already);
+          const already = (target.registrations || []).some((r) => Number(r.olympiad_id) === oid);
+          if (targetType === 'teacher') {
+            toggleTeacherRegistration(target.id, oid, !already);
+          } else {
+            toggleRegistration(target.id, oid, !already);
+          }
         };
       });
     }
@@ -1428,6 +1766,8 @@ export function renderMiniAppHtml() {
         return;
       }
 
+      const wasRegistered = (student.registrations || []).some((r) => Number(r.olympiad_id) === olympiadId);
+
       try {
         if (shouldRegister) {
           const data = await apiFetch('/api/registrations', {
@@ -1444,7 +1784,10 @@ export function renderMiniAppHtml() {
             reg,
             ...(student.registrations || []).filter((r) => Number(r.olympiad_id) !== olympiadId)
           ];
-          olympiad.registrations_count = Number(olympiad.registrations_count || 0) + 1;
+          if (!wasRegistered) {
+            olympiad.student_registrations_count = Number(olympiad.student_registrations_count ?? olympiad.registrations_count ?? 0) + 1;
+            olympiad.registrations_count = Number(olympiad.registrations_count || 0) + 1;
+          }
           haptic('success');
           toast('✓ ' + student.full_name + ' → ' + olympiad.title);
         } else {
@@ -1452,7 +1795,10 @@ export function renderMiniAppHtml() {
             method: 'DELETE'
           });
           student.registrations = (student.registrations || []).filter((r) => Number(r.olympiad_id) !== olympiadId);
-          olympiad.registrations_count = Math.max(0, Number(olympiad.registrations_count || 0) - 1);
+          if (wasRegistered) {
+            olympiad.student_registrations_count = Math.max(0, Number(olympiad.student_registrations_count ?? olympiad.registrations_count ?? 0) - 1);
+            olympiad.registrations_count = Math.max(0, Number(olympiad.registrations_count || 0) - 1);
+          }
           haptic('light');
           toast('Снята запись: ' + student.full_name);
         }
@@ -1461,12 +1807,82 @@ export function renderMiniAppHtml() {
         renderOlympiadStrip();
         renderClassSummary();
         renderStudentsTable();
-        if (state.activePopoverStudentId) renderOlympiadPopoverList();
+        if (state.activePopoverTarget) renderOlympiadPopoverList();
         updateTopStatBadge();
+        updateModeBadges();
       } catch (err) {
         haptic('error');
         toast(err.message, true);
       }
+    }
+
+    async function toggleTeacherRegistration(participantTeacherId, olympiadId, shouldRegister) {
+      const teacher = state.teachers.find((t) => Number(t.id) === Number(participantTeacherId));
+      const olympiad = state.olympiads.find((o) => Number(o.id) === Number(olympiadId));
+      if (!teacher || !olympiad) return;
+
+      if (shouldRegister && !state.selectedTeacherName) {
+        toast('Сначала выберите ФИО учителя в блоке «Кто регистрирует»', true);
+        closeOlympiadPopover();
+        openTeacherPopover();
+        haptic('error');
+        return;
+      }
+
+      const wasRegistered = (teacher.registrations || []).some((r) => Number(r.olympiad_id) === olympiadId);
+
+      try {
+        if (shouldRegister) {
+          const data = await apiFetch('/api/teacher-registrations', {
+            method: 'POST',
+            body: JSON.stringify({
+              participant_teacher_id: participantTeacherId,
+              olympiad_id: olympiadId,
+              registrar_teacher_id: state.selectedTeacherId,
+              teacher_name: state.selectedTeacherName
+            })
+          });
+          const reg = data.registration;
+          teacher.registrations = [
+            reg,
+            ...(teacher.registrations || []).filter((r) => Number(r.olympiad_id) !== olympiadId)
+          ];
+          if (!wasRegistered) {
+            olympiad.teacher_registrations_count = Number(olympiad.teacher_registrations_count || 0) + 1;
+            olympiad.registrations_count = Number(olympiad.registrations_count || 0) + 1;
+          }
+          haptic('success');
+          toast('✓ ' + teacher.full_name + ' → ' + olympiad.title);
+        } else {
+          await apiFetch('/api/teacher-registrations?participant_teacher_id=' + participantTeacherId + '&olympiad_id=' + olympiadId, {
+            method: 'DELETE'
+          });
+          teacher.registrations = (teacher.registrations || []).filter((r) => Number(r.olympiad_id) !== olympiadId);
+          if (wasRegistered) {
+            olympiad.teacher_registrations_count = Math.max(0, Number(olympiad.teacher_registrations_count || 0) - 1);
+            olympiad.registrations_count = Math.max(0, Number(olympiad.registrations_count || 0) - 1);
+          }
+          haptic('light');
+          toast('Снята запись: ' + teacher.full_name);
+        }
+
+        renderSpotlight();
+        renderOlympiadStrip();
+        renderTeachersWorkspace();
+        if (state.activePopoverTarget) renderOlympiadPopoverList();
+        updateTopStatBadge();
+        updateModeBadges();
+      } catch (err) {
+        haptic('error');
+        toast(err.message, true);
+      }
+    }
+
+    function updateModeBadges() {
+      const studentsTotal = state.olympiads.reduce((acc, o) => acc + Number(o.student_registrations_count ?? o.registrations_count ?? 0), 0);
+      const teachersTotal = state.olympiads.reduce((acc, o) => acc + Number(o.teacher_registrations_count || 0), 0);
+      $('studentsModeBadge').textContent = studentsTotal;
+      $('teachersModeBadge').textContent = teachersTotal;
     }
 
     function updateTopStatBadge() {
@@ -1517,14 +1933,26 @@ export function renderMiniAppHtml() {
       $('customTeacherInput').value = '';
       closePopovers();
       renderTeacherSelector();
+      if (state.mode === 'teachers') renderTeachersWorkspace();
       haptic('light');
     };
+
+    $('modeSwitchBar').querySelectorAll('.mode-switch-btn').forEach((btn) => {
+      btn.onclick = () => {
+        setMode(btn.dataset.mode);
+        haptic('light');
+      };
+    });
 
     $('classSearch').oninput = () => renderClassPopover();
     $('teacherSearch').oninput = () => renderTeacherSelector();
     $('studentSearch').oninput = (e) => {
       state.studentSearch = e.target.value;
       renderStudentsTable();
+    };
+    $('teacherPartSearch').oninput = (e) => {
+      state.teacherPartSearch = e.target.value;
+      renderTeachersWorkspace();
     };
     $('olPopoverSearch').oninput = () => renderOlympiadPopoverList();
     $('olPopoverClose').onclick = closeOlympiadPopover;
@@ -1535,6 +1963,14 @@ export function renderMiniAppHtml() {
         state.studentFilter = btn.dataset.filter;
         $('studentFilterGroup').querySelectorAll('.filter-btn').forEach((b) => b.classList.toggle('active', b === btn));
         renderStudentsTable();
+      };
+    });
+
+    $('teacherFilterGroup').querySelectorAll('.filter-btn').forEach((btn) => {
+      btn.onclick = () => {
+        state.teacherFilter = btn.dataset.filter;
+        $('teacherFilterGroup').querySelectorAll('.filter-btn').forEach((b) => b.classList.toggle('active', b === btn));
+        renderTeachersWorkspace();
       };
     });
 
@@ -1581,7 +2017,9 @@ export function renderMiniAppHtml() {
         renderOlympiadStrip();
         renderTeacherSelector();
         renderClassPopover();
+        renderTeachersWorkspace();
         updateTopStatBadge();
+        updateModeBadges();
       } catch (err) {
         $('spotlightTitle').textContent = 'Ошибка подключения к базе данных';
         $('spotlightDesc').textContent = err.message;

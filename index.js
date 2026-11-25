@@ -62,7 +62,7 @@ async function buildRegisterKeyboard(api, olympiadId) {
     }
 
     if (!url) return undefined;
-    return new InlineKeyboard().url("🎓 Зарегистрировать ученика", url);
+    return new InlineKeyboard().url("🎓 Регистрация на олимпиаду", url);
 }
 
 // Отправка ответа: в ЛС остается, а в группе удаляет саму команду и стирает ответ через 7 секунд
@@ -326,7 +326,7 @@ bot.command("app", async (ctx) => {
     const admin = await isAdmin(ctx);
 
     if (isPrivate) {
-        const kb = new InlineKeyboard().webApp("🎓 Зарегистрировать ученика", webBase);
+        const kb = new InlineKeyboard().webApp("🎓 Регистрация на олимпиаду", webBase);
         if (admin) {
             kb.row().webApp("📊 Админ-панель и Excel", `${webBase}/admin`);
         }
@@ -339,7 +339,7 @@ bot.command("app", async (ctx) => {
         ? `https://t.me/${botUsername}/${shortName}`
         : webBase;
     const kb = new InlineKeyboard().url("🎓 Открыть портал олимпиад", url);
-    await replyClean(ctx, "Портал регистрации учеников на олимпиады:", 15000, { reply_markup: kb });
+    await replyClean(ctx, "Портал регистрации учеников и учителей на олимпиады:", 15000, { reply_markup: kb });
 });
 
 bot.command("status", async (ctx) => {
@@ -351,17 +351,20 @@ bot.command("status", async (ctx) => {
     let dbStatus = "✅ Подключена";
     let moderatorIds = [];
     let olympiadsCount = 0;
-    let regsCount = 0;
+    let studentRegsCount = 0;
+    let teacherRegsCount = 0;
     try {
         await ensureTables();
-        const [modsRes, olRes, regRes] = await Promise.all([
+        const [modsRes, olRes, regRes, tRegRes] = await Promise.all([
             sql`SELECT id FROM moderators ORDER BY id;`,
             sql`SELECT COUNT(*)::int AS cnt FROM olympiads WHERE is_active = TRUE;`,
-            sql`SELECT COUNT(*)::int AS cnt FROM registrations;`
+            sql`SELECT COUNT(*)::int AS cnt FROM registrations;`,
+            sql`SELECT COUNT(*)::int AS cnt FROM teacher_registrations;`
         ]);
         moderatorIds = modsRes.rows.map(r => String(r.id));
         olympiadsCount = olRes.rows[0]?.cnt || 0;
-        regsCount = regRes.rows[0]?.cnt || 0;
+        studentRegsCount = regRes.rows[0]?.cnt || 0;
+        teacherRegsCount = tRegRes.rows[0]?.cnt || 0;
     } catch {
         dbStatus = "❌ Ошибка подключения (/init_db)";
     }
@@ -384,12 +387,13 @@ bot.command("status", async (ctx) => {
         lines.push(`↩️ В ответе: ${rName} [ID: ${replyUser.id}] — Модератор: ${isRMod ? "✅" : "❌"}`);
     }
 
+    const totalRegsCount = studentRegsCount + teacherRegsCount;
     lines.push(
         "",
         `💬 Чат: ${ctx.chat?.id} | Тема: ${threadId ?? "основная"}`,
         `• Галерея: ${GALLERY_THREAD_ID} | Олимпиады: ${OLYMPIAD_THREAD_ID}`,
         `🗄 БД: ${dbStatus} (модераторов: ${moderatorIds.length})`,
-        `🏆 Олимпиад: ${olympiadsCount} | Регистраций: ${regsCount}`
+        `🏆 Олимпиад: ${olympiadsCount} | Регистраций: ${totalRegsCount} (учеников: ${studentRegsCount}, учителей: ${teacherRegsCount})`
     );
 
     if (admin || isUserMod) {
@@ -406,7 +410,7 @@ bot.command("init_db", async (ctx) => {
     if (!(await isAdmin(ctx))) return replyClean(ctx, "⛔ Нет прав.");
     try {
         await ensureTables(true);
-        await replyClean(ctx, "✅ Все таблицы БД (бот + олимпиады + ученики + регистрации) готовы!");
+        await replyClean(ctx, "✅ Все таблицы БД (бот + олимпиады + ученики + учителя + регистрации) готовы!");
     } catch {
         await replyClean(ctx, "❌ Ошибка создания таблиц.");
     }

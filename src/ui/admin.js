@@ -228,7 +228,7 @@ export function renderAdminHtml() {
 
     .filters-bar {
       display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
+      grid-template-columns: repeat(5, minmax(0, 1fr)) auto;
       gap: 10px;
       margin-bottom: 14px;
       align-items: center;
@@ -352,11 +352,11 @@ export function renderAdminHtml() {
       <section class="tab-panel active" id="tab-overview">
         <div class="card section-card">
           <div class="section-title">
-            <span>Количество учеников по каждой олимпиаде</span>
+            <span>Количество участников по каждой олимпиаде</span>
             <button type="button" class="btn btn-primary btn-sm" id="exportFullBtn2">📥 Полный отчёт Excel (.xlsx)</button>
           </div>
           <p style="margin:-4px 0 14px; font-size:13px; color:var(--muted);">
-            Нажмите на любую олимпиаду, чтобы раскрыть точный список зарегистрированных учеников и кто их записал.
+            Нажмите на любую олимпиаду, чтобы раскрыть точный список зарегистрированных учеников и учителей и кто их записал.
           </p>
           <div class="olympiad-stat-list" id="olympiadStatsList"></div>
         </div>
@@ -383,9 +383,14 @@ export function renderAdminHtml() {
 
           <div class="filters-bar">
             <select class="native-select" id="fOlympiad"><option value="">Все олимпиады</option></select>
+            <select class="native-select" id="fType">
+              <option value="">Все участники</option>
+              <option value="student">Только ученики</option>
+              <option value="teacher">Только учителя</option>
+            </select>
             <select class="native-select" id="fClass"><option value="">Все классы</option></select>
-            <select class="native-select" id="fTeacher"><option value="">Все учителя</option></select>
-            <input type="text" class="input" id="fSearch" placeholder="Поиск по ФИО ученика..." />
+            <select class="native-select" id="fTeacher"><option value="">Все регистраторы</option></select>
+            <input type="text" class="input" id="fSearch" placeholder="Поиск по ФИО участника..." />
             <button type="button" class="btn btn-gold" id="exportFilteredBtn">📥 Excel по фильтру</button>
           </div>
 
@@ -394,8 +399,8 @@ export function renderAdminHtml() {
               <thead>
                 <tr>
                   <th>#</th>
-                  <th>Класс</th>
-                  <th>ФИО ученика</th>
+                  <th>Категория / Класс</th>
+                  <th>ФИО участника</th>
                   <th>Олимпиада / Конкурс</th>
                   <th>Кто зарегистрировал</th>
                   <th>Дата</th>
@@ -766,7 +771,7 @@ export function renderAdminHtml() {
         '<div class="kpi-card">' +
           '<div class="kpi-label">Всего регистраций</div>' +
           '<div class="kpi-val mono">' + k.total_registrations + '</div>' +
-          '<div class="kpi-sub">С учётом нескольких на ученика</div>' +
+          '<div class="kpi-sub">Учеников: ' + (k.student_registrations || 0) + ' • Учителей: ' + (k.teacher_registrations || 0) + '</div>' +
         '</div>' +
         '<div class="kpi-card">' +
           '<div class="kpi-label">Уникальных учеников</div>' +
@@ -774,9 +779,9 @@ export function renderAdminHtml() {
           '<div class="kpi-sub">Из ' + k.total_students + ' учеников в ' + k.total_classes + ' классах</div>' +
         '</div>' +
         '<div class="kpi-card">' +
-          '<div class="kpi-label">Активных учителей</div>' +
-          '<div class="kpi-val mono">' + k.active_registrars + '</div>' +
-          '<div class="kpi-sub">В справочнике: ' + k.total_teachers + '</div>' +
+          '<div class="kpi-label">Учителей-участников</div>' +
+          '<div class="kpi-val mono">' + (k.unique_teachers_registered || 0) + '</div>' +
+          '<div class="kpi-sub">В базе: ' + k.total_teachers + ' • Регистраторов: ' + k.active_registrars + '</div>' +
         '</div>';
     }
 
@@ -792,22 +797,36 @@ export function renderAdminHtml() {
       $('olympiadStatsList').innerHTML = list.map((ol) => {
         const isOpen = state.openOlympiads.has(ol.id);
         const pct = Math.round(((ol.registrations_count || 0) / maxRegs) * 100);
-        const breakdown = Object.entries(ol.class_breakdown || {})
+        const teacherPill = (ol.teacher_registrations_count || 0) > 0
+          ? '<span class="pill pill-gold mono">👩‍🏫 Учителя: ' + ol.teacher_registrations_count + '</span>'
+          : '';
+        const classPills = Object.entries(ol.class_breakdown || {})
           .map(([cls, cnt]) => '<span class="pill pill-pine mono">' + escapeHtml(cls) + ': ' + cnt + '</span>')
           .join(' ');
+        const breakdown = [teacherPill, classPills].filter(Boolean).join(' ');
+
+        const countSub = (ol.teacher_registrations_count || 0) > 0
+          ? (ol.student_registrations_count || 0) + ' уч. • ' + ol.teacher_registrations_count + ' пед.'
+          : 'участников';
 
         const participantsRows = (ol.participants || []).length > 0
           ? '<div class="data-table-wrap"><table class="data-table">' +
-              '<thead><tr><th>#</th><th>Класс</th><th>ФИО ученика</th><th>Кто зарегистрировал</th><th>Дата</th></tr></thead>' +
-              '<tbody>' + ol.participants.map((p, i) => (
-                '<tr>' +
-                  '<td class="mono">' + (i + 1) + '</td>' +
-                  '<td><span class="pill pill-pine mono">' + escapeHtml(p.class_name) + '</span></td>' +
-                  '<td style="font-weight:600;">' + escapeHtml(p.student_name) + '</td>' +
-                  '<td>' + escapeHtml(p.registered_by_name) + '</td>' +
-                  '<td class="mono" style="font-size:12px; color:var(--muted);">' + formatDate(p.created_at) + '</td>' +
-                '</tr>'
-              )).join('') + '</tbody></table></div>'
+              '<thead><tr><th>#</th><th>Категория / Класс</th><th>ФИО участника</th><th>Кто зарегистрировал</th><th>Дата</th></tr></thead>' +
+              '<tbody>' + ol.participants.map((p, i) => {
+                const isTeacher = p.participant_type === 'teacher';
+                const badge = isTeacher
+                  ? '<span class="pill pill-gold">Учитель</span>' + (p.subject ? '<div style="font-size:11.5px; color:var(--muted); margin-top:2px;">' + escapeHtml(p.subject) + '</div>' : '')
+                  : '<span class="pill pill-pine mono">' + escapeHtml(p.class_name) + '</span>';
+                return (
+                  '<tr>' +
+                    '<td class="mono">' + (i + 1) + '</td>' +
+                    '<td>' + badge + '</td>' +
+                    '<td style="font-weight:600;">' + escapeHtml(p.participant_name || p.student_name) + '</td>' +
+                    '<td>' + escapeHtml(p.registered_by_name) + '</td>' +
+                    '<td class="mono" style="font-size:12px; color:var(--muted);">' + formatDate(p.created_at) + '</td>' +
+                  '</tr>'
+                );
+              }).join('') + '</tbody></table></div>'
           : '<div style="font-size:13px; color:var(--muted);">На эту олимпиаду пока никто не зарегистрирован.</div>';
 
         return (
@@ -825,7 +844,7 @@ export function renderAdminHtml() {
               '<div style="display:flex; align-items:center; gap:10px;">' +
                 '<div style="text-align:right;">' +
                   '<div class="mono" style="font-size:22px; font-weight:700; color:var(--pine);">' + (ol.registrations_count || 0) + '</div>' +
-                  '<div style="font-size:11.5px; color:var(--muted);">учеников</div>' +
+                  '<div style="font-size:11.5px; color:var(--muted); white-space:nowrap;">' + countSub + '</div>' +
                 '</div>' +
                 '<button type="button" class="btn btn-outline btn-sm" data-export-ol="' + ol.id + '">📥 Excel</button>' +
               '</div>' +
@@ -860,7 +879,7 @@ export function renderAdminHtml() {
             '<div class="stat-row">' +
               '<div>' +
                 '<div style="font-weight:600;">' + (i + 1) + '. ' + escapeHtml(t.name) + '</div>' +
-                '<div style="font-size:12px; color:var(--muted);">Учеников: ' + t.unique_students + ' • Олимпиад: ' + t.unique_olympiads + '</div>' +
+                '<div style="font-size:12px; color:var(--muted);">Учеников: ' + t.unique_students + ' • Учителей: ' + (t.unique_teachers || 0) + ' • Олимпиад: ' + t.unique_olympiads + '</div>' +
               '</div>' +
               '<span class="pill pill-gold mono">' + t.registrations_count + ' зап.</span>' +
             '</div>'
@@ -895,7 +914,7 @@ export function renderAdminHtml() {
         (state.data.classStats || []).map((c) => '<option value="' + c.id + '">' + escapeHtml(c.name) + '</option>').join('');
 
       const teacherNames = [...new Set((state.data.allRegistrations || []).map((r) => r.registered_by_name).filter(Boolean))].sort();
-      $('fTeacher').innerHTML = '<option value="">Все учителя</option>' +
+      $('fTeacher').innerHTML = '<option value="">Все регистраторы</option>' +
         teacherNames.map((n) => '<option value="' + escapeHtml(n) + '">' + escapeHtml(n) + '</option>').join('');
 
       $('fOlympiad').value = curOl;
@@ -905,16 +924,20 @@ export function renderAdminHtml() {
 
     function getFilteredRegistrations() {
       const olId = $('fOlympiad').value;
+      const pType = $('fType').value;
       const clId = $('fClass').value;
       const tName = $('fTeacher').value;
       const q = ($('fSearch').value || '').trim().toLowerCase();
 
       return (state.data.allRegistrations || []).filter((r) => {
         if (olId && String(r.olympiad_id) !== olId) return false;
-        if (clId && String(r.class_id) !== clId) return false;
+        if (pType && r.participant_type !== pType) return false;
+        if (clId && (r.participant_type !== 'student' || String(r.class_id) !== clId)) return false;
         if (tName && r.registered_by_name !== tName) return false;
         if (q && !(
-          String(r.student_name || '').toLowerCase().includes(q) ||
+          String(r.participant_name || r.student_name || '').toLowerCase().includes(q) ||
+          String(r.class_name || '').toLowerCase().includes(q) ||
+          String(r.subject || '').toLowerCase().includes(q) ||
           String(r.olympiad_title || '').toLowerCase().includes(q) ||
           String(r.registered_by_name || '').toLowerCase().includes(q)
         )) return false;
@@ -931,26 +954,33 @@ export function renderAdminHtml() {
         return;
       }
 
-      $('journalTbody').innerHTML = rows.map((r, i) => (
-        '<tr>' +
-          '<td class="mono">' + (i + 1) + '</td>' +
-          '<td><span class="pill pill-pine mono">' + escapeHtml(r.class_name) + '</span></td>' +
-          '<td style="font-weight:600;">' + escapeHtml(r.student_name) + '</td>' +
-          '<td>' + escapeHtml(r.olympiad_title) + '</td>' +
-          '<td>' +
-            '<div>' + escapeHtml(r.registered_by_name) + '</div>' +
-            (r.registered_by_tg_username ? '<div class="mono" style="font-size:11.5px; color:var(--muted);">@' + escapeHtml(r.registered_by_tg_username) + '</div>' : '') +
-          '</td>' +
-          '<td class="mono" style="font-size:12px; color:var(--muted); white-space:nowrap;">' + formatDate(r.created_at) + '</td>' +
-          '<td><button type="button" class="btn btn-danger btn-sm" data-del-reg="' + r.id + '">×</button></td>' +
-        '</tr>'
-      )).join('');
+      $('journalTbody').innerHTML = rows.map((r, i) => {
+        const isTeacher = r.participant_type === 'teacher';
+        const badge = isTeacher
+          ? '<span class="pill pill-gold">Учитель</span>' + (r.subject ? '<div style="font-size:11.5px; color:var(--muted); margin-top:2px;">' + escapeHtml(r.subject) + '</div>' : '')
+          : '<span class="pill pill-pine mono">' + escapeHtml(r.class_name) + '</span>';
+        return (
+          '<tr>' +
+            '<td class="mono">' + (i + 1) + '</td>' +
+            '<td>' + badge + '</td>' +
+            '<td style="font-weight:600;">' + escapeHtml(r.participant_name || r.student_name) + '</td>' +
+            '<td>' + escapeHtml(r.olympiad_title) + '</td>' +
+            '<td>' +
+              '<div>' + escapeHtml(r.registered_by_name) + '</div>' +
+              (r.registered_by_tg_username ? '<div class="mono" style="font-size:11.5px; color:var(--muted);">@' + escapeHtml(r.registered_by_tg_username) + '</div>' : '') +
+            '</td>' +
+            '<td class="mono" style="font-size:12px; color:var(--muted); white-space:nowrap;">' + formatDate(r.created_at) + '</td>' +
+            '<td><button type="button" class="btn btn-danger btn-sm" data-del-reg="' + r.id + '" data-del-type="' + (isTeacher ? 'teacher' : 'student') + '">×</button></td>' +
+          '</tr>'
+        );
+      }).join('');
 
       $('journalTbody').querySelectorAll('[data-del-reg]').forEach((btn) => {
         btn.onclick = async () => {
           if (!(await askConfirm('Удалить эту регистрацию?', 'Удалить'))) return;
           try {
-            await adminFetch('/api/registrations?id=' + btn.dataset.delReg, { method: 'DELETE' });
+            const endpoint = btn.dataset.delType === 'teacher' ? '/api/teacher-registrations' : '/api/registrations';
+            await adminFetch(endpoint + '?id=' + btn.dataset.delReg, { method: 'DELETE' });
             toast('Регистрация удалена');
             await loadOverview();
           } catch (err) {
@@ -1136,13 +1166,14 @@ export function renderAdminHtml() {
     $('exportFullBtn2').onclick = () => downloadExcel();
     $('exportFilteredBtn').onclick = () => downloadExcel({
       olympiadId: $('fOlympiad').value,
+      participantType: $('fType').value,
       classId: $('fClass').value,
       teacher: $('fTeacher').value,
       q: $('fSearch').value
     });
     $('downloadTemplateBtn').onclick = downloadTemplate;
 
-    ['fOlympiad', 'fClass', 'fTeacher', 'fSearch'].forEach((id) => {
+    ['fOlympiad', 'fType', 'fClass', 'fTeacher', 'fSearch'].forEach((id) => {
       $(id).addEventListener(id === 'fSearch' ? 'input' : 'change', renderJournalTable);
     });
     $('dirClassFilter').onchange = renderDirectory;
